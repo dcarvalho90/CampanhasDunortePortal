@@ -1,4 +1,4 @@
-# INDICADORES DE CAMPANHAS
+# INDICADORES DE CAMPANHAS AGOSTO 2026
 
 ## 1. Campanha Gillette (JAS)
 - Acomulado do Trimestre
