@@ -843,11 +843,7 @@ IF vQtdMesesCarregadosMovel > 0 THEN
         NoConcatenate
         TEMP_VENDAS_MIXMIN:
         LOAD
-<<<<<<< HEAD
             "Cod Produto"  as CodProduto,
-=======
-            "Cod Produto"   as CodProduto,
->>>>>>> 80fbc577909826925836c9aa990224b0466be34f
             "Cod Cliente Principal" & '|' & "Cod Filial" AS _ChaveClienteFilial,
             ApplyMap('MAP_CLIENTE_CATEGORIA', "Cod Cliente Principal" & '|' & "Cod Filial") AS Categoria,
             QtdPedidoLiquido,
