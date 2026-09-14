@@ -489,11 +489,92 @@ seção "PREMIAÇÃO GILLETTE TRIMESTRAL":
    `PREMIACAO_GILLETTE_TRI` **só por `CodRca`** (formato estrela, sem
    ciclo). **Ainda não validado no Qlik Sense.**
 
+## 7.1 Setembro 2026 — Premiação do Supervisor (implementada)
+
+Confirmado lendo `data/CAMPANHAS_2026_09.xlsx` que o pipeline de
+Supervisor (blocos `PREM_SUP`/`SUP_DEVOL`/`SUP_DEVOL_RANK` na
+Transformação + `BASE_SUP_INDICADORES_REALIZADO`/`GANHO_FINAL_SUP`/
+`RANKING_GILLETTE_SUP`/`PREMIACAO_GILLETTE_TRI_SUP` na Modelagem, ver
+seção 2) já estava largamente implementado, ao contrário do que a
+versão anterior desta seção dizia.
+
+**Correção importante (2026-09-14, achado pelo usuário revendo o
+`.QVS`)**: a afirmação original desta seção — de que "qualquer
+indicador novo sobe pro Supervisor automaticamente" — estava **errada**
+para indicadores que só existem na aba `PREM_SUP`, sem nenhuma linha
+correspondente em `PREM_RCA`. O motivo: `BASE_SUP_INDICADORES_REALIZADO`
+(PARTE 1) reagrega `BASE_RCA_INDICADORES_REALIZADO` por `CodSupervisor`
+— mas essa tabela só tem linhas para indicadores que passaram pelo
+catálogo `TRF_BASE_RCA_INDICADORES`, que por sua vez só é gerado a
+partir da aba `PREM_RCA`. Se um indicador **nunca** aparece em
+`PREM_RCA` (só em `PREM_SUP`), nenhum RCA nunca teve uma linha desse
+indicador — e reagregar "o que o RCA tem" por Supervisor não produz
+nada para reagregar. Confirmado comparando as duas abas de
+`CAMPANHAS_2026_09.xlsx`: `FATURAMENTO TOTAL RR`, `FATURAMENTO TOTAL
+AM` e `RENTABILIDADE 9%` (todos Classe `FATURAMENTO`, Tipo
+`DEPARTAMENTO`, Período `MESATUAL`) só existem em `PREM_SUP` — os
+demais indicadores de Supervisor (`PANTENE*`, `HEAD E SHOULDERS`,
+`ORAL B*`, `DESODORANTE`, `NEXGARD*`, `FROTLINE`, `TERAPEUTICOS`,
+`POSITIVAÇÃO BRFOODS`/`PROCTER`, `FAIXA ESCOLHA CERTA`, `PLATINUM
+POINTS`, `GILLETTE TRIMESTRAL`) também existem em `PREM_RCA`, então
+esses sim já funcionavam via reagregação.
+
+**Correção aplicada no `.QVS`** (aba Transformação + Modelagem):
+- Novo catálogo `TRF_BASE_SUP_INDICADORES` (Transformação, logo após o
+  catálogo `TRF_BASE_RCA_INDICADORES` existente) — mesma lógica, mas lê
+  a aba `PREM_SUP` em vez de `PREM_RCA`, então cobre TODO indicador de
+  Supervisor, inclusive os exclusivos.
+- Novo bloco **PARTE 1.1** na Modelagem (logo após a PARTE 1 de
+  `BASE_SUP_INDICADORES_REALIZADO`): usa `Not Exists(IndicadorSup,
+  Indicador)` para achar dinamicamente quais indicadores do catálogo de
+  Supervisor ainda não têm nenhuma linha vinda do RCA, e calcula o
+  Realizado/Meta desses diretamente — reagregando
+  `FATO_VENDAS_DEPARTAMENTO_MES` (Realizado, via `ApplyMap('MAP_RCA_SUP', ...)`)
+  e `TRF_METAS_DEPARTAMENTO_MES` (Meta, usando o campo `CodSupervisor`
+  próprio da aba `RCA_DEP`) até o nível de Supervisor, depois
+  `CONCATENATE`ado em `BASE_SUP_INDICADORES_REALIZADO` antes do cálculo
+  de Ganho (PARTE 2) — que já funciona sem alteração, pois
+  `TRF_PREM_SUP` cobre esses indicadores normalmente.
+- **Limitação atual, documentada no comentário do bloco**: só cobre
+  `TipoIndicador='DEPARTAMENTO'` + `PeriodoIndicador='MESATUAL'` (único
+  caso que aparece hoje para indicadores exclusivos de Supervisor). Se
+  aparecer um indicador exclusivo de outro Tipo/Período, o bloco precisa
+  ganhar mais uma fonte (mesmo padrão do `CONCATENATE` em
+  `REALIZADO_SECAO` do RCA). **Ainda não validado no Qlik Sense.**
+
+Confirmado direto na aba `INDICADORES` (catálogo, 50 linhas) e
+`PREM_SUP` (premiação por supervisor, 87 linhas) de
+`CAMPANHAS_2026_09.xlsx` que os seguintes indicadores **já funcionam**
+(uns via reagregação — PARTE 1 —, outros via o novo bloco — PARTE
+1.1), assim que a planilha e os QVDs de Metas do mês estiverem
+disponíveis: `FATURAMENTO TOTAL RR`, `FATURAMENTO TOTAL AM`,
+`RENTABILIDADE 9%` (PARTE 1.1, novos), `PANTENE SHAMPOO E
+CONDICIONADOR`, `PANTENE TRATAMENTO`, `PANTENE KIT`, `HEAD E
+SHOULDERS`, `ORAL B CREME`, `ORAL B ESCOVAS`, `DESODORANTE`, `NEXGARD`,
+`NEXGARD SPECTRA`, `NEXGARD COMBO`, `FROTLINE`, `TERAPEUTICOS`,
+`POSITIVAÇÃO BRFOODS`, `POSITIVAÇÃO PROCTER`, `GILLETTE TRIMESTRAL`
+(PARTE 1, já existentes).
+
+Os supervisores fictícios **Suzy (COD_SUP `240340`, campanha PET:
+NEXGARD/NEXGARD SPECTRA/NEXGARD COMBO/FROTLINE/TERAPEUTICOS/POSITIVAÇÃO
+BRFOODS)** e **Gerson (COD_SUP `7374`)** — que a seção 7 (antiga)
+listava como "não encontrados" — **já aparecem em `PREM_SUP` de
+setembro**. Isso resolve esse ponto em aberto, desde que o cadastro
+`CAD_RCA` associe os RCAs certos a esses 2 códigos de supervisor (dado
+de cadastro, fora deste `.QVS` — não verificável aqui).
+
+**Únicos indicadores de Supervisor sem pipeline pronto**: `CATFOCO
+ALWAYS` e `CATFOCO PAMPERS` (Classe `KPI`, igual Escolha
+Certa/Platinum Point — não resolvem pelo join genérico de vendas, já
+que dependem de uma regra de "cliente positivado numa categoria foco"
+que ainda não existe em nenhuma aba de `CAMPANHAS_2026_09.xlsx`
+(`MIX_MIN`, `MIXMIN_GRUPO_PRODUTO` e `LISTING_PRODUTOS` foram checadas
+— nenhuma tem lista de produto/cliente para "foco Pampers"/"foco
+Always"). **Decisão do usuário (2026-09-14): deixar de fora por
+enquanto** até a fonte de dado ser definida/adicionada na planilha.
+
 ## 7. Pontos em aberto para continuar o projeto
 
-- Confirmar onde vivem os indicadores **PET** e os supervisores
-  fictícios **Gerson (7374)** / **Suzy (240340)** — não estão neste
-  `.QVS`.
 - Confirmar se o valor de R$20 por positivação do **Escolha Certa
   Especial** é calculado em algum lugar (script ou app Qlik) — não
   localizado aqui.
@@ -508,8 +589,13 @@ seção "PREMIAÇÃO GILLETTE TRIMESTRAL":
   `GANHO_FINAL_RCA` **ainda presente** (não deve sumir - é a base de
   premiação final do RCA), mas ligada a `BASE_RCA_INDICADORES_REALIZADO`
   e `PREMIACAO_GILLETTE_TRI` só por `CodRca`, sem loop entre as 3.
-- **PREM_RANK_GILLETTE_SUP** foi só transformado (extração), ainda sem
-  nenhum cálculo de premiação por Supervisor ligado a ele.
+- **CATFOCO ALWAYS / CATFOCO PAMPERS** (indicadores de Supervisor,
+  Setembro 2026): fonte de dado ainda não definida, ver seção 7.1.
+- Não foi possível confirmar os QVDs de **Metas de Setembro**
+  (`METAS_2026-SET.xlsx` → `TRF_METAS_MES`/`TRF_METAS_DEPARTAMENTO_MES`)
+  — só `CAMPANHAS_2026_09.xlsx` foi conferida em `data/`. Sem a planilha
+  de Metas, os indicadores novos de Faturamento (ex: `FATURAMENTO TOTAL
+  RR/AM`, `RENTABILIDADE 9%`) rodam com `Meta` nula até ela existir.
 - **Vendas Trimestre Móvel ainda não está ligado ao `TRF_BASE_RCA`** —
   hoje só existe como transformador (aba Transformação). Para aparecer
   na tabela unificada do dashboard, precisaria: (1) uma linha de

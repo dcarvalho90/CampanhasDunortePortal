@@ -46,6 +46,7 @@ SET vPathVendasMes = 'lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MA
 
 LET vAno      = Year(Today());
 LET vMesAtual = Num(Month(Today()), '00');
+//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
 
 BASE_RCA_INDICADORES:
 LOAD
@@ -87,6 +88,60 @@ DROP TABLE [TRF_BASE_RCA_INDICADORES_$(vAno)_$(vMesAtual)];
 
 
 ///////////////////////////////////////////////////////////////////////////
+// TRF_BASE_SUP_INDICADORES (planilha CAMPANHAS, aba PREM_SUP)
+// Mesma logica do catalogo TRF_BASE_RCA_INDICADORES acima (aba PREM_RCA),
+// mas a nivel de SUPERVISOR - catalogo "todo indicador que existe pro
+// supervisor, batido ou nao". Necessario porque, a partir de Setembro/2026,
+// existem indicadores EXCLUSIVOS de supervisor (ex: FATURAMENTO TOTAL RR,
+// FATURAMENTO TOTAL AM, RENTABILIDADE 9%) que NUNCA aparecem na aba
+// PREM_RCA - sem este catalogo proprio, esses indicadores nunca ganhavam
+// nenhuma linha de Realizado, porque a unica fonte de Realizado do
+// Supervisor ate entao era reagregar BASE_RCA_INDICADORES_REALIZADO por
+// CodSupervisor (PARTE 1, aba Modelagem) - e essa reagregacao so tem o
+// que ja existe no RCA; se o RCA nunca teve a linha (indicador nao esta
+// em PREM_RCA), nao ha nada pra somar. Ver Modelagem, bloco
+// "PARTE 1.1 - REALIZADO DOS INDICADORES EXCLUSIVOS DE SUPERVISOR".
+///////////////////////////////////////////////////////////////////////////
+BASE_SUP_INDICADORES:
+LOAD
+    DATA,
+    COD_SUP,
+    INDICADOR
+
+FROM [lib://4_Plan/Metas P&G/CAMPANHAS_$(vAno)_$(vMesAtual).xlsx]
+(ooxml, embedded labels, table is PREM_SUP);
+
+
+LEFT JOIN (BASE_SUP_INDICADORES)
+BASE_INDICADORES_SUP:
+LOAD
+    INDICADOR,
+    CODIGO,
+    TIPO,
+    CLASSE,
+    PERIODO
+FROM [lib://4_Plan/Metas P&G/CAMPANHAS_$(vAno)_$(vMesAtual).xlsx]
+(ooxml, embedded labels, table is INDICADORES);
+
+NoConcatenate
+[TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual)]:
+LOAD
+	DATA,
+    COD_SUP		as CodSupervisor,
+	INDICADOR	as Indicador,
+    CODIGO		as Codigo,
+    TIPO		as TipoIndicador,
+    CLASSE		as ClasseIndicador,
+    PERIODO     as PeriodoIndicador
+RESIDENT BASE_SUP_INDICADORES;
+
+DROP TABLE BASE_SUP_INDICADORES;
+
+STORE [TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual)] INTO  [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual).QVD](qvd);
+DROP TABLE [TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual)];
+
+
+///////////////////////////////////////////////////////////////////////////
 // TRANSFORMADOR PREM_RANK_GILLETTE_RCA (planilha CAMPANHAS)
 // A aba tem 2 tabelas lógicas lado a lado, separadas por colunas em
 // branco: (A-C) ranking de prêmio por posição dentro de um grupo, e
@@ -101,6 +156,7 @@ SET vPathDestinoRank = '$(vPathCampanhas)';
 
 LET vAnoRank    = Year(Today());
 LET vMesTxtRank = Num(Month(Today()), '00');
+//LET vMesTxtRank = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoRank            = '$(vPathOrigemRank)CAMPANHAS_$(vAnoRank)_$(vMesTxtRank).xlsx';
 LET vNomeArquivoPremRank     = 'TRF_PREM_RANK_GILLETTE_RCA_$(vAnoRank)_$(vMesTxtRank).qvd';
@@ -169,6 +225,7 @@ SET vPathDestinoRankSup = '$(vPathCampanhas)';
 
 LET vAnoRankSup    = Year(Today());
 LET vMesTxtRankSup = Num(Month(Today()), '00');
+//LET vMesTxtRankSup = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoRankSup            = '$(vPathOrigemRankSup)CAMPANHAS_$(vAnoRankSup)_$(vMesTxtRankSup).xlsx';
 LET vNomeArquivoPremRankSup    = 'TRF_PREM_RANK_GILLETTE_SUP_$(vAnoRankSup)_$(vMesTxtRankSup).qvd';
@@ -386,6 +443,7 @@ SET vPathDestino = '$(vPathCampanhas)';
 
 LET vAno      = Year(Today());
 LET vMesAtual = Num(Month(Today()), '00');
+//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
 
 // Nomes dos QVDs finais
 LET vNomeArquivoSecaoMovel               = 'FATO_VENDAS_SECAO_TRIMESTRE_MOVEL_$(vAno)_$(vMesAtual).qvd';
@@ -686,7 +744,8 @@ IF vQtdMesesCarregadosMovel > 0 THEN
     SET vPathDestinoMix = '$(vPathCampanhas)';
 
     LET vAnoMix    = Year(Today());
-    LET vMesTxtMix = Num(Month(Today()), '00');
+	LET vMesTxtMix = Num(Month(Today()), '00');
+//     LET vMesTxtMix = Num(Month(AddMonths(Today(), -1)), '00');
 
     LET vArquivoMix          = '$(vPathOrigemMix)CAMPANHAS_$(vAnoMix)_$(vMesTxtMix).xlsx';
     LET vNomeArquivoMixMin   = 'TRF_MIX_MIN_$(vAnoMix)_$(vMesTxtMix).qvd';
@@ -843,7 +902,7 @@ IF vQtdMesesCarregadosMovel > 0 THEN
         NoConcatenate
         TEMP_VENDAS_MIXMIN:
         LOAD
-            "Cod Produto"  as CodProduto,
+            "Cod Produto"   as CodProduto,
             "Cod Cliente Principal" & '|' & "Cod Filial" AS _ChaveClienteFilial,
             ApplyMap('MAP_CLIENTE_CATEGORIA', "Cod Cliente Principal" & '|' & "Cod Filial") AS Categoria,
             QtdPedidoLiquido,
@@ -1006,6 +1065,7 @@ SET vPathDestino = '$(vPathCampanhas)';
 
 LET vAno      = Year(Today());
 LET vMesAtual = Num(Month(Today()), '00');
+//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoMes = '$(vPathOrigem)COMERCIAL_TRATADO_$(vAno)_$(vMesAtual).QVD';
 
@@ -1276,6 +1336,7 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
 
     LET vAnoMix    = Year(Today());
     LET vMesTxtMix = Num(Month(Today()), '00');
+//    LET vMesTxtMix = Num(Month(AddMonths(Today(), -1)), '00');
 
     LET vArquivoMix = '$(vPathOrigemMix)CAMPANHAS_$(vAnoMix)_$(vMesTxtMix).xlsx';
 
@@ -1744,6 +1805,7 @@ SET vPathDestinoPrem = '$(vPathCampanhas)';
 
 LET vAnoPrem    = Year(Today());
 LET vMesTxtPrem = Num(Month(Today()), '00');
+//LET vMesTxtPrem = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoPrem     = '$(vPathOrigemPrem)CAMPANHAS_$(vAnoPrem)_$(vMesTxtPrem).xlsx';
 LET vNomeArquivoPrem = 'TRF_PREM_RCA_$(vAnoPrem)_$(vMesTxtPrem).qvd';
@@ -1786,6 +1848,7 @@ SET vPathDestinoDevol = '$(vPathCampanhas)';
 
 LET vAnoDevol    = Year(Today());
 LET vMesTxtDevol = Num(Month(Today()), '00');
+//LET vMesTxtDevol = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoDevol     = '$(vPathOrigemDevol)CAMPANHAS_$(vAnoDevol)_$(vMesTxtDevol).xlsx';
 LET vNomeArquivoDevol = 'TRF_RCA_DEVOL_$(vAnoDevol)_$(vMesTxtDevol).qvd';
@@ -1833,6 +1896,7 @@ SET vPathDestinoDevolRank = '$(vPathCampanhas)';
 
 LET vAnoDevolRank    = Year(Today());
 LET vMesTxtDevolRank = Num(Month(Today()), '00');
+//LET vMesTxtDevolRank = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoDevolRank     = '$(vPathOrigemDevolRank)CAMPANHAS_$(vAnoDevolRank)_$(vMesTxtDevolRank).xlsx';
 LET vNomeArquivoDevolRank = 'TRF_RCA_DEVOL_RANK_$(vAnoDevolRank)_$(vMesTxtDevolRank).qvd';
@@ -1877,6 +1941,7 @@ SET vPathDestinoPremSup = '$(vPathCampanhas)';
 
 LET vAnoPremSup    = Year(Today());
 LET vMesTxtPremSup = Num(Month(Today()), '00');
+//LET vMesTxtPremSup = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoPremSup     = '$(vPathOrigemPremSup)CAMPANHAS_$(vAnoPremSup)_$(vMesTxtPremSup).xlsx';
 LET vNomeArquivoPremSup = 'TRF_PREM_SUP_$(vAnoPremSup)_$(vMesTxtPremSup).qvd';
@@ -1922,6 +1987,7 @@ SET vPathDestinoDevolSup = '$(vPathCampanhas)';
 
 LET vAnoDevolSup    = Year(Today());
 LET vMesTxtDevolSup = Num(Month(Today()), '00');
+//LET vMesTxtDevolSup = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoDevolSup     = '$(vPathOrigemDevolSup)CAMPANHAS_$(vAnoDevolSup)_$(vMesTxtDevolSup).xlsx';
 LET vNomeArquivoDevolSup = 'TRF_SUP_DEVOL_$(vAnoDevolSup)_$(vMesTxtDevolSup).qvd';
@@ -1971,6 +2037,7 @@ SET vPathDestinoDevolRankSup = '$(vPathCampanhas)';
 
 LET vAnoDevolRankSup    = Year(Today());
 LET vMesTxtDevolRankSup = Num(Month(Today()), '00');
+//LET vMesTxtDevolRankSup = Num(Month(AddMonths(Today(), -1)), '00');
 
 LET vArquivoDevolRankSup     = '$(vPathOrigemDevolRankSup)CAMPANHAS_$(vAnoDevolRankSup)_$(vMesTxtDevolRankSup).xlsx';
 LET vNomeArquivoDevolRankSup = 'TRF_SUP_DEVOL_RANK_$(vAnoDevolRankSup)_$(vMesTxtDevolRankSup).qvd';
@@ -1998,7 +2065,6 @@ ELSE
     TRACE >>> ATENCAO: planilha CAMPANHAS $(vMesTxtDevolRankSup)/$(vAnoDevolRankSup) ainda nao disponivel ($(vArquivoDevolRankSup)). QVD de Faixa Devolucao Rank Supervisor nao foi gerado.;
 
 ENDIF
-
 
 ///$tab Modelagem
 ///////////////////////////////////////////////////////////////////////////
@@ -2028,10 +2094,13 @@ ENDIF
 
 LET vDataCarg 	= Date(MonthStart(Today()), 'YYYY_MM');
 LET vDataAux 	= Date(MonthStart(Today()));
+// LET vDataCarg 	= Date(MonthStart(Today()-5), 'YYYY_MM');
+// LET vDataAux 	= Date(MonthStart(Today()-5));
 
 // Variaveis para o Trimestre Fixo
 LET vAno       = Year(Today());
 LET vMesAtual  = Month(Today());
+//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
 LET vTrimestre = Ceil(vMesAtual / 3);
 LET vMesIni    = (vTrimestre - 1) * 3 + 1;   // ex: T3 -> 7
 LET vMesFim    = vMesIni + 2;                 // ex: T3 -> 9
@@ -2946,6 +3015,121 @@ GROUP BY
 
 /*//////////////////////////////////////////////////////////////////////////
 
+    PARTE 1.1 - REALIZADO DOS INDICADORES EXCLUSIVOS DE SUPERVISOR
+    Indicadores que so existem na aba PREM_SUP (nunca em PREM_RCA) - ex:
+    FATURAMENTO TOTAL RR, FATURAMENTO TOTAL AM, RENTABILIDADE 9% (Setembro
+    2026) - nunca ganham uma linha em TRF_BASE_RCA_INDICADORES (catalogo
+    vem so de PREM_RCA), entao a PARTE 1 acima (que reagrega
+    BASE_RCA_INDICADORES_REALIZADO por CodSupervisor) nunca tem nada pra
+    somar para eles. Aqui usamos o catalogo proprio TRF_BASE_SUP_INDICADORES
+    (aba PREM_SUP, ver Transformacao) e reagregamos o Realizado/Meta - ja
+    calculados a nivel de RCA em FATO_VENDAS_DEPARTAMENTO_MES e
+    TRF_METAS_DEPARTAMENTO_MES - direto ate o Supervisor.
+
+    Not Exists(IndicadorSup, Indicador) detecta dinamicamente quais
+    indicadores do catalogo de Supervisor AINDA NAO tem nenhuma linha em
+    BASE_SUP_INDICADORES_REALIZADO (ou seja, nao vieram de nenhum RCA) -
+    evita duplicar/dobrar o Realizado de indicadores que ja sao cobertos
+    pela PARTE 1, e continua funcionando se um indicador exclusivo de hoje
+    passar a existir tambem em PREM_RCA num mes futuro.
+
+    Por enquanto so cobre TipoIndicador=DEPARTAMENTO + PeriodoIndicador=
+    MESATUAL, que e o unico caso que aparece na planilha de Setembro/2026
+    para indicadores exclusivos de Supervisor - linhas de outro Tipo/
+    Periodo ficam sem Realizado (Meta/Valor nulos) ate este bloco ganhar
+    mais uma fonte, mesmo padrao do CONCATENATE em REALIZADO_SECAO (RCA).
+
+//////////////////////////////////////////////////////////////////////////*/
+TRF_BASE_SUP_EXCLUSIVO:
+LOAD
+    Date(MonthStart(DATA)) AS DataSup,
+    CodSupervisor,
+    Indicador               AS IndicadorSup,
+    ClasseIndicador          AS ClasseIndicadorSup,
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _RealizadoSupExcl
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual).QVD]
+(qvd)
+WHERE TipoIndicador = 'DEPARTAMENTO' AND PeriodoIndicador = 'MESATUAL' AND ClasseIndicador = 'FATURAMENTO'
+  AND Not Exists(IndicadorSup, Indicador);
+
+// Realizado do RCA (FATO_VENDAS_DEPARTAMENTO_MES) somado por Supervisor -
+// precisa agregar (GROUP BY) ANTES do LEFT JOIN, porque varios RCAs do
+// mesmo supervisor produzem a mesma chave _RealizadoSupExcl e um LEFT
+// JOIN nao soma linhas repetidas, so as replica.
+REALIZADO_DEPARTAMENTO_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSupExcl,
+    ValorPedidoLiquido,
+    ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
+(qvd);
+
+REALIZADO_DEPARTAMENTO_SUP:
+NoConcatenate
+LOAD
+    _RealizadoSupExcl,
+    Sum(ValorPedidoLiquido)   AS ValorPedidoLiquidoSup,
+    Sum(ValorFaturadoLiquido) AS ValorFaturadoLiquidoSup
+RESIDENT REALIZADO_DEPARTAMENTO_SUP_TEMP
+GROUP BY _RealizadoSupExcl;
+
+DROP TABLE REALIZADO_DEPARTAMENTO_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP_EXCLUSIVO)
+LOAD * RESIDENT REALIZADO_DEPARTAMENTO_SUP;
+DROP TABLE REALIZADO_DEPARTAMENTO_SUP;
+
+// Meta ja vem com CodSupervisor proprio (coluna SV da aba RCA_DEP), sem
+// precisar de ApplyMap('MAP_RCA_SUP', ...) - mesma fonte usada pelo Meta
+// de Departamento do RCA (META_DEPARTAMENTO_FAT, PARTE 5 acima).
+META_DEPARTAMENTO_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _RealizadoSupExcl,
+    MetaFat
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_DEPARTAMENTO_SUP:
+NoConcatenate
+LOAD
+    _RealizadoSupExcl,
+    Sum(MetaFat) AS MetaSup
+RESIDENT META_DEPARTAMENTO_SUP_TEMP
+GROUP BY _RealizadoSupExcl;
+
+DROP TABLE META_DEPARTAMENTO_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP_EXCLUSIVO)
+LOAD * RESIDENT META_DEPARTAMENTO_SUP;
+DROP TABLE META_DEPARTAMENTO_SUP;
+
+BASE_SUP_INDICADORES_REALIZADO_EXCLUSIVO:
+NoConcatenate
+LOAD
+    DataSup,
+    CodSupervisor,
+    IndicadorSup,
+    ClasseIndicadorSup,
+
+    Alt(MetaSup, 0)                 AS MetaSup,
+    Alt(ValorPedidoLiquidoSup, 0)   AS ValorPedidoLiquidoSup,
+    Alt(ValorFaturadoLiquidoSup, 0) AS ValorFaturadoLiquidoSup,
+
+    If(Alt(MetaSup, 0) > 0, Alt(ValorPedidoLiquidoSup, 0)   / MetaSup) AS PercAtingimentoPedidoSup,
+    If(Alt(MetaSup, 0) > 0, Alt(ValorFaturadoLiquidoSup, 0) / MetaSup) AS PercAtingimentoFaturadoSup
+
+RESIDENT TRF_BASE_SUP_EXCLUSIVO;
+
+DROP TABLE TRF_BASE_SUP_EXCLUSIVO;
+
+CONCATENATE (BASE_SUP_INDICADORES_REALIZADO)
+LOAD * RESIDENT BASE_SUP_INDICADORES_REALIZADO_EXCLUSIVO;
+
+DROP TABLE BASE_SUP_INDICADORES_REALIZADO_EXCLUSIVO;
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
     PARTE 2 - CALCULO DO GANHO POR SUPERVISOR/INDICADOR
     Mesma regra do RCA: compara o % de atingimento (Pedido e Faturado,
     separadamente) contra a Faixa exigida daquele indicador para o
@@ -3277,7 +3461,6 @@ LOAD
 RESIDENT BASE_GILLETTE_TRI_SUP;
 
 DROP TABLE BASE_GILLETTE_TRI_SUP;
-
 
 ///$tab Carregamento
 ///////////////////////////////////////////////////////////////////////////
