@@ -25,9 +25,20 @@ FROM [lib://Carga_Duno/EXTRATOR/CADASTRO/CAD_RCA.QVD] (qvd);
 
 MAP_CLIENTE_PRINC:
 MAPPING
-LOAD DISTINCT 
+LOAD DISTINCT
     CODIGOCLIENTE,
-    CODIGOCLIENTEPRINCIPAL 
+    CODIGOCLIENTEPRINCIPAL
+FROM [lib://Carga_Duno/EXTRATOR/CADASTRO/CAD_CLIENTE.QVD] (qvd);
+
+// TODO: verify - nome exato do campo em CAD_CLIENTE.QVD assumido igual
+// ao usado no set analysis do Qlik Sense (CODPLATAFORMA_PG) - usado no
+// indicador de Supervisor CATFOCO PAMPERS (ver bloco "6.1 CATEGORIA
+// FOCO" na Vendas Mes Atual) para restringir a plataforma P&G = 176.
+MAP_CLIENTE_PLATAFORMA:
+MAPPING
+LOAD DISTINCT
+    CODIGOCLIENTE,
+    CODPLATAFORMA_PG
 FROM [lib://Carga_Duno/EXTRATOR/CADASTRO/CAD_CLIENTE.QVD] (qvd);
 
 
@@ -1075,6 +1086,7 @@ LET vNomeArquivoDepartamento = 'FATO_VENDAS_DEPARTAMENTO_MES_$(vAno)_$(vMesAtual
 
 LET vNomeArquivoPositivacaoSecao        = 'FATO_POSITIVACAO_SECAO_MES_$(vAno)_$(vMesAtual).qvd';
 LET vNomeArquivoPositivacaoDepartamento = 'FATO_POSITIVACAO_DEPARTAMENTO_MES_$(vAno)_$(vMesAtual).qvd';
+LET vNomeArquivoCatFoco                 = 'FATO_CATFOCO_RCA_MES_$(vAno)_$(vMesAtual).qvd';
 
 LET vNomeArquivoDevolucaoRca = 'FATO_DEVOLUCAO_RCA_MES_$(vAno)_$(vMesAtual).qvd';
 LET vNomeArquivoFaturamentoRca = 'FATO_FATURAMENTO_RCA_MES_$(vAno)_$(vMesAtual).qvd';
@@ -1106,6 +1118,8 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
         "Cod Secao",
         "Cod Departamento",
         "Cod Produto",
+        "Cod Ramo P&G",
+        ApplyMap('MAP_CLIENTE_PLATAFORMA', "Cod Cliente", '#ND') AS CodPlataformaPG,
 
     	"Qtd Vendida"					as QtdPedido,
     	"Qtd Vendida Liquida"			as QtdPedidoLiquido,
@@ -1319,6 +1333,107 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
     TRACE QVD de Positivacao por Departamento gerado com sucesso: $(vPathDestino)$(vNomeArquivoPositivacaoDepartamento);
 
     DROP TABLE FATO_POSITIVACAO_DEPARTAMENTO;
+
+
+    /////////////////////////////////////////////////////////////////////////
+    // 6.1 CATEGORIA FOCO (CATFOCO ALWAYS / CATFOCO PAMPERS) - INDICADOR
+    //     EXCLUSIVO DE SUPERVISOR (Setembro 2026)
+    //     Fonte de dado definida pelo usuario em 2026-09-15, reproduzindo
+    //     a mesma regra ja usada nos objetos de set analysis do app Qlik
+    //     Sense:
+    //       CATFOCO ALWAYS  = clientes positivados nos 12 produtos
+    //         listados abaixo, dentro do Departamento 3.
+    //       CATFOCO PAMPERS = clientes positivados nos Ramos P&G listados
+    //         abaixo, nas Secoes listadas, restrito a CodPlataformaPG=176
+    //         (campo do cliente, ver MAP_CLIENTE_PLATAFORMA), E que
+    //         tenham comprado quantidade >= 10 (QtdPedidoLiquido = "Qtd
+    //         Vendida Liquida" - mesmo campo usado nos dois lados,
+    //         Pedido e Faturado, conforme confirmado com o usuario).
+    //     TipoIndicador/ClasseIndicador/PeriodoIndicador/Codigo abaixo
+    //     confirmados na aba INDICADORES da planilha CAMPANHAS
+    //     (DEPARTAMENTO/KPI/MESATUAL/3 - mesmo Codigo de Platinum
+    //     Point/Escolha Certa).
+    //     Indicador so existe na aba PREM_SUP (nunca em PREM_RCA) -
+    //     por isso este QVD alimenta so a base de Supervisor (bloco
+    //     "1.2 REALIZADO ESCOLHA CERTA + PLATINUM POINTS" na Modelagem,
+    //     que ja reagrega RCA->Supervisor por Indicador), nunca
+    //     BASE_RCA_INDICADORES_REALIZADO.
+    //     O lado "Pedido" nao existe na definicao original de negocio
+    //     (dada em termos so de Faturado) - decisao do usuario (2026-09-
+    //     15): espelhar a mesma regra trocando "Vlr Tot Faturado Liquido
+    //     Venda" por "Vlr Venda Liquida", mesmo padrao ja usado nas
+    //     Positivacoes de Secao/Departamento acima.
+    /////////////////////////////////////////////////////////////////////////
+    CLIENTE_CATFOCO_ALWAYS_TEMP:
+    LOAD
+        "Cod RCA",
+        "Cod Cliente",
+        If(Sum("Vlr Venda Liquida") > 0, 1, 0)              AS FlagPositivadoPedido,
+        If(Sum("Vlr Tot Faturado Liquido Venda") > 0, 1, 0) AS FlagPositivadoFaturado
+    RESIDENT TMP_VENDAS
+    WHERE Match("Cod Produto", 216404,216312,220114,211834,17504,219481,17734,217921,211833,219480,17505,17156)
+      AND "Cod Departamento" = 3
+    GROUP BY
+        "Cod RCA",
+        "Cod Cliente";
+
+    NoConcatenate
+    FATO_CATFOCO_ALWAYS:
+    LOAD
+        "Cod RCA"                    AS CodRca,
+        'CATFOCO ALWAYS'             AS Indicador,
+        Sum(FlagPositivadoPedido)    AS ValorPedidoLiquido,
+        Sum(FlagPositivadoFaturado)  AS ValorFaturadoLiquido
+    RESIDENT CLIENTE_CATFOCO_ALWAYS_TEMP
+    GROUP BY
+        "Cod RCA";
+
+    DROP TABLE CLIENTE_CATFOCO_ALWAYS_TEMP;
+
+    // Cada lado (Pedido/Faturado) usa sua propria quantidade liquida -
+    // QtdPedidoLiquido ("Qtd Vendida Liquida") pro Pedido e
+    // QtdFaturadoLiquido ("Qtd Faturada Liquida") pro Faturado, ambas ja
+    // carregadas em TMP_VENDAS - correcao pedida pelo usuario (2026-09-
+    // 15): antes o lado Faturado tambem checava QtdPedidoLiquido.
+    CLIENTE_CATFOCO_PAMPERS_TEMP:
+    LOAD
+        "Cod RCA",
+        "Cod Cliente",
+        If(Sum("Vlr Venda Liquida") > 0 And Sum(QtdPedidoLiquido) >= 10, 1, 0)                AS FlagPositivadoPedido,
+        If(Sum("Vlr Tot Faturado Liquido Venda") > 0 And Sum(QtdFaturadoLiquido) >= 10, 1, 0) AS FlagPositivadoFaturado
+    RESIDENT TMP_VENDAS
+    WHERE Match("Cod Ramo P&G", 169,168,112,113,114,115,127,171,170,38,126,8,160,48,47)
+      AND Match("Cod Secao", 4382,3691,4164,4383,3542,4083,30)
+      AND CodPlataformaPG = 176
+    GROUP BY
+        "Cod RCA",
+        "Cod Cliente";
+
+    NoConcatenate
+    FATO_CATFOCO_PAMPERS:
+    LOAD
+        "Cod RCA"                    AS CodRca,
+        'CATFOCO PAMPERS'            AS Indicador,
+        Sum(FlagPositivadoPedido)    AS ValorPedidoLiquido,
+        Sum(FlagPositivadoFaturado)  AS ValorFaturadoLiquido
+    RESIDENT CLIENTE_CATFOCO_PAMPERS_TEMP
+    GROUP BY
+        "Cod RCA";
+
+    DROP TABLE CLIENTE_CATFOCO_PAMPERS_TEMP;
+
+    CONCATENATE (FATO_CATFOCO_ALWAYS)
+    LOAD * RESIDENT FATO_CATFOCO_PAMPERS;
+
+    DROP TABLE FATO_CATFOCO_PAMPERS;
+
+    RENAME TABLE FATO_CATFOCO_ALWAYS TO FATO_CATFOCO_RCA;
+
+    STORE FATO_CATFOCO_RCA INTO [$(vPathDestino)$(vNomeArquivoCatFoco)] (qvd);
+
+    TRACE QVD de Categoria Foco (Always/Pampers) gerado com sucesso: $(vPathDestino)$(vNomeArquivoCatFoco);
+
+    DROP TABLE FATO_CATFOCO_RCA;
 
 
     /////////////////////////////////////////////////////////////////////////
@@ -1672,6 +1787,7 @@ LET vNomeArquivoSecao         = 'TRF_METAS_MES_$(vAno)_$(vMesTxt).qvd';
 LET vNomeArquivoDepartamento  = 'TRF_METAS_DEPARTAMENTO_MES_$(vAno)_$(vMesTxt).qvd';
 LET vNomeArquivoPlatinumPoint = 'TRF_METAS_PLATINUM_POINT_MES_$(vAno)_$(vMesTxt).qvd';
 LET vNomeArquivoEscolhaCerta  = 'TRF_METAS_ESCOLHA_CERTA_MES_$(vAno)_$(vMesTxt).qvd';
+LET vNomeArquivoMetaCatFoco   = 'TRF_METAS_CATFOCO_MES_$(vAno)_$(vMesTxt).qvd';
 
 TRACE ==============================================;
 TRACE Gerando QVDs de Metas do mes $(vMesAbrevPT)/$(vAno) ($(vMesTxt));
@@ -1786,6 +1902,39 @@ IF Not IsNull(FileSize('$(vArquivoOrigem)')) THEN
     TRACE QVD de Meta Escolha Certa gerado com sucesso: $(vPathDestino)$(vNomeArquivoEscolhaCerta);
 
     DROP TABLE TRF_METAS_ESCOLHA_CERTA;
+
+
+    /////////////////////////////////////////////////////////////////////////
+    // 2.5 META CATEGORIA FOCO (aba METACAT_FOCO) - Setembro 2026
+    //     Meta por RCA (METACAT_FOCO), agregada por Supervisor na
+    //     Modelagem (soma das metas dos RCAs dele - confirmado pelo
+    //     usuario). CAT_FOCO vem como 'ALWAYS'/'PAMPERS' - concatenado
+    //     em 'CATFOCO '&CAT_FOCO pra bater com o Indicador exato da aba
+    //     INDICADORES ('CATFOCO ALWAYS'/'CATFOCO PAMPERS').
+    //     TODO: verify - cabecalho da planilha nao tem texto na coluna
+    //     do Cod Supervisor (so DTREF/CODRCA/CAT_FOCO/METACAT_FOCO tem
+    //     cabecalho); Qlik nomeia automaticamente pela letra da coluna
+    //     quando o cabecalho esta em branco - "F" assumido pelo mesmo
+    //     padrao ja confirmado em uso no bloco de Platinum Point acima
+    //     (campo "G", tambem sem cabecalho, na mesma posicao relativa).
+    /////////////////////////////////////////////////////////////////////////
+    TRF_METAS_CATFOCO:
+    LOAD
+        CODRCA         AS [Cod RCA],
+        F              AS CodSupervisor,
+        'CATFOCO ' & Upper(CAT_FOCO) AS Indicador,
+        'DEPARTAMENTO' AS TipoIndicador,
+        'KPI'          AS ClasseIndicador,
+        'MESATUAL'     AS PeriodoIndicador,
+        METACAT_FOCO   AS MetaCatFoco
+    FROM [$(vArquivoOrigem)]
+    (ooxml, embedded labels, table is METACAT_FOCO);
+
+    STORE TRF_METAS_CATFOCO INTO [$(vPathDestino)$(vNomeArquivoMetaCatFoco)] (qvd);
+
+    TRACE QVD de Meta Categoria Foco gerado com sucesso: $(vPathDestino)$(vNomeArquivoMetaCatFoco);
+
+    DROP TABLE TRF_METAS_CATFOCO;
 
 ELSE
 
@@ -3055,6 +3204,7 @@ LOAD
     Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaMixSup,
     Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _RealizadoListingSup,
     Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaListingSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaCatFocoSup,
 
     // Escolha Certa e Platinum Point: o Realizado vem de QVDs proprios,
     // chaveados so por DATA + RCA + Indicador (sem Codigo/Tipo/Classe) -
@@ -3151,13 +3301,21 @@ DROP TABLE REALIZADO_SUP;
 
 /*//////////////////////////////////////////////////////////////////////////
 
-    1.2 REALIZADO ESCOLHA CERTA + PLATINUM POINTS (Classe KPI)
-        No RCA esses dois entram so na agregacao final
-        (BASE_RCA_INDICADORES_REALIZADO), chaveados por DATA+RCA+Indicador.
-        Aqui entram na propria montagem, pela chave _RealizadoKpiSup.
-        Como os dois QVDs trazem nomes de Indicador diferentes ('FAIXA
-        ESCOLHA CERTA' e 'PLATINUM POINTS'), podem compartilhar a mesma
-        chave sem risco de colisao - por isso um unico CONCATENATE.
+    1.2 REALIZADO ESCOLHA CERTA + PLATINUM POINTS + CATEGORIA FOCO
+        (Classe KPI)
+        No RCA, Escolha Certa e Platinum Point entram so na agregacao
+        final (BASE_RCA_INDICADORES_REALIZADO), chaveados por
+        DATA+RCA+Indicador. Aqui entram na propria montagem, pela chave
+        _RealizadoKpiSup. Como os tres QVDs trazem nomes de Indicador
+        diferentes ('FAIXA ESCOLHA CERTA', 'PLATINUM POINTS', 'CATFOCO
+        ALWAYS'/'CATFOCO PAMPERS'), podem compartilhar a mesma chave sem
+        risco de colisao - por isso um unico CONCATENATE.
+
+        FATO_CATFOCO_RCA (terceira fonte) e diferente das outras duas:
+        nao tem campo DATA nem "Cod RCA" (so CodRca, ja no grao RCA+
+        Indicador, sem quebra por data) - por isso usa '$(vDataAux)'
+        literal na chave, mesmo padrao ja usado em REALIZADO_SUP_TEMP
+        (bloco 1.1) para as fontes de venda/positivacao.
 
 //////////////////////////////////////////////////////////////////////////*/
 REALIZADO_KPI_SUP_TEMP:
@@ -3174,6 +3332,14 @@ LOAD
     Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
     Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_PLATINUM_POINT_$(vDataCarg).QVD]
+(qvd);
+
+CONCATENATE (REALIZADO_KPI_SUP_TEMP)
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & Indicador AS _RealizadoKpiSup,
+    Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
+    Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_CATFOCO_RCA_MES_$(vDataCarg).qvd]
 (qvd);
 
 REALIZADO_KPI_SUP:
@@ -3430,6 +3596,32 @@ LEFT JOIN (TRF_BASE_SUP)
 LOAD * RESIDENT META_EC_SUP;
 DROP TABLE META_EC_SUP;
 
+// CATFOCO ALWAYS/PAMPERS compartilham Codigo='3'+Tipo='DEPARTAMENTO'+
+// Classe='KPI' (mesmo padrao de Platinum Point/Escolha Certa acima) -
+// por isso o Indicador (vindo do proprio QVD de Meta, ver Transformacao
+// "2.5 META CATEGORIA FOCO") entra na chave, cobrindo os dois de uma vez
+// com um unico bloco.
+META_CATFOCO_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & Indicador AS _MetaCatFocoSup,
+    MetaCatFoco
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_CATFOCO_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_CATFOCO_SUP:
+NoConcatenate
+LOAD
+    _MetaCatFocoSup,
+    Sum(MetaCatFoco) AS MetaCatFocoSup
+RESIDENT META_CATFOCO_SUP_TEMP
+GROUP BY _MetaCatFocoSup;
+
+DROP TABLE META_CATFOCO_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_CATFOCO_SUP;
+DROP TABLE META_CATFOCO_SUP;
+
 
 /*//////////////////////////////////////////////////////////////////////////
 
@@ -3449,7 +3641,7 @@ LOAD
     CodSupervisor,
     IndicadorSup,
     ClasseIndicadorSup,
-    Alt(MetaSecaoFatSup, MetaDepFatSup, MetaDepPosSup, MetaPlatinumPointSup, MetaEscolhaCertaSup, MetaSecaoFatGilletteTriSup, MetaMixSup, MetaListingSup) AS MetaSupOrigem,
+    Alt(MetaSecaoFatSup, MetaDepFatSup, MetaDepPosSup, MetaPlatinumPointSup, MetaEscolhaCertaSup, MetaSecaoFatGilletteTriSup, MetaMixSup, MetaListingSup, MetaCatFocoSup) AS MetaSupOrigem,
     Alt(ValorPedidoSupSecDep,   ValorPedidoSupKpi,   ValorPedidoSupMix,   ValorPedidoSupListing)   AS ValorPedidoSupOrigem,
     Alt(ValorFaturadoSupSecDep, ValorFaturadoSupKpi, ValorFaturadoSupMix, ValorFaturadoSupListing) AS ValorFaturadoSupOrigem
 RESIDENT TRF_BASE_SUP;

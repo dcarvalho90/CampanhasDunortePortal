@@ -43,9 +43,13 @@
 
     9. Categoria Foco Pampers / Categoria Foco Always
         Quantidade de clientes positivados na categoria foco Pampers/Always.
-        **Pendente**: fonte de dado (lista de produtos/clientes elegíveis)
-        ainda não está em nenhuma aba da planilha de campanhas — decisão
-        de deixar de fora até ser definida.
+        **Implementado em 2026-09-15** (fonte de dado e regra de negócio
+        confirmadas pelo usuário, ver DOCUMENTACAO CAMPANHAS DUNORTE.md,
+        seção 7.3): Always = 12 produtos fixos + Departamento 3; Pampers =
+        Ramo P&G + Seção + Plataforma P&G, com quantidade mínima de 10
+        unidades. Meta por RCA vem da aba METACAT_FOCO de
+        METAS_2026-SET.xlsx, somada por supervisor. Validado no Qlik
+        Sense em 2026-09-15.
 
     10. Pantene Shampoo e Condicionador / Pantene Tratamento / Pantene Kit
         Faturamento por seção (Cod Secao 33 / 4363 / 4381)

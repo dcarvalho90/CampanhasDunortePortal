@@ -563,15 +563,10 @@ setembro**. Isso resolve esse ponto em aberto, desde que o cadastro
 `CAD_RCA` associe os RCAs certos a esses 2 códigos de supervisor (dado
 de cadastro, fora deste `.QVS` — não verificável aqui).
 
-**Únicos indicadores de Supervisor sem pipeline pronto**: `CATFOCO
-ALWAYS` e `CATFOCO PAMPERS` (Classe `KPI`, igual Escolha
-Certa/Platinum Point — não resolvem pelo join genérico de vendas, já
-que dependem de uma regra de "cliente positivado numa categoria foco"
-que ainda não existe em nenhuma aba de `CAMPANHAS_2026_09.xlsx`
-(`MIX_MIN`, `MIXMIN_GRUPO_PRODUTO` e `LISTING_PRODUTOS` foram checadas
-— nenhuma tem lista de produto/cliente para "foco Pampers"/"foco
-Always"). **Decisão do usuário (2026-09-14): deixar de fora por
-enquanto** até a fonte de dado ser definida/adicionada na planilha.
+`CATFOCO ALWAYS` e `CATFOCO PAMPERS` (Classe `KPI`, igual Escolha
+Certa/Platinum Point) não tinham pipeline pronto nesta data — a regra de
+"cliente positivado numa categoria foco" não existia em nenhuma aba de
+`CAMPANHAS_2026_09.xlsx`. **Implementado em 2026-09-15, ver seção 7.3.**
 
 ## 7.2 Setembro 2026 — Base de Realizado do Supervisor reescrita no grão do Supervisor
 
@@ -669,6 +664,77 @@ Transformação.
 **Validado no Qlik Sense em 2026-09-15 (confirmado pelo usuário): recarga
 concluída sem erros, base de Supervisor funcionando.**
 
+## 7.3 Setembro 2026 — CATFOCO ALWAYS / CATFOCO PAMPERS implementados
+
+Indicadores exclusivos de Supervisor (Classe `KPI`, Tipo `DEPARTAMENTO`,
+Período `MESATUAL`, `Codigo='3'` — mesmo `Codigo` de Platinum
+Point/Escolha Certa). Fonte de dado e regra de negócio confirmadas pelo
+usuário em 2026-09-15, reproduzindo o mesmo cálculo já usado nos objetos
+de set analysis do app Qlik Sense (contagem de clientes distintos
+positivados dentro de um recorte específico de produto/seção/ramo).
+
+**Regra de Realizado** (nova seção "6.1 CATEGORIA FOCO" na Transformação,
+dentro de "Vendas Mês Atual", gera `FATO_CATFOCO_RCA_MES_AAAA_MM.qvd`):
+
+- **CATFOCO ALWAYS**: cliente positivado = `Sum(ValorFaturadoLiquido) > 0`
+  (Faturado) / `Sum(ValorVendaLiquida) > 0` (Pedido) restrito aos 12
+  `Cod Produto` da família Always (`216404,216312,220114,211834,17504,
+  219481,17734,217921,211833,219480,17505,17156`) e `Cod Departamento=3`.
+- **CATFOCO PAMPERS**: cliente positivado = a mesma condição de
+  Faturado/Pedido **E** quantidade >= 10 — `Sum(QtdPedidoLiquido) >= 10`
+  ("Qtd Vendida Liquida") no lado Pedido, `Sum(QtdFaturadoLiquido) >= 10`
+  ("Qtd Faturada Liquida") no lado Faturado (**corrigido em 2026-09-15**
+  a pedido do usuário — antes o lado Faturado também checava
+  `QtdPedidoLiquido`, igual ao Pedido) — restrito a `Cod Ramo P&G` em
+  `{169,168,112,113,114,115,127,171,170,38,126,8,160,48,47}`, `Cod Secao`
+  em `{4382,3691,4164,4383,3542,4083,30}` e `CodPlataformaPG = 176`.
+- O lado "Pedido" não existe na definição de negócio original (dada só
+  em termos de Faturado) — **decisão do usuário (2026-09-15)**: espelhar
+  a mesma regra trocando `Vlr Tot Faturado Liquido Venda` por
+  `Vlr Venda Liquida`, mesmo padrão das Positivações de Seção/Departamento
+  já existentes.
+- **Novo campo/mapping**: `CodPlataformaPG` (via nova `MAPPING
+  MAP_CLIENTE_PLATAFORMA`, `CAD_CLIENTE.QVD`) e `"Cod Ramo P&G"`
+  adicionados ao `LOAD` de `TMP_VENDAS` (Vendas Mês Atual). **TODO:
+  verify** — nome exato do campo `CODPLATAFORMA_PG` em `CAD_CLIENTE.QVD`
+  assumido igual ao usado no Qlik Sense hoje.
+
+**Regra de Meta** (nova seção "2.5 META CATEGORIA FOCO" no transformador
+de Metas P&G, lê a aba `METACAT_FOCO` de `METAS_2026-SET.xlsx`, gera
+`TRF_METAS_CATFOCO_MES_AAAA_MM.qvd`): Meta por RCA (`METACAT_FOCO`),
+agregada por Supervisor na Modelagem como soma das metas dos RCAs dele
+(confirmado pelo usuário). **TODO: verify** — a coluna do Cod Supervisor
+nesta aba não tem texto de cabeçalho (só `DTREF`/`CODRCA`/`CAT_FOCO`/
+`METACAT_FOCO` têm); assumido que o Qlik nomeia automaticamente pela
+letra da coluna (`F`) quando o cabeçalho está em branco, mesmo padrão já
+confirmado em uso pelo campo `G` do bloco de Meta Platinum Point (idêntica
+posição relativa: header só até a coluna anterior, RCA nomeado, Sup sem
+nome).
+
+**Modelagem**: o Realizado entra na PARTE 1.2 (bloco `REALIZADO_KPI_SUP`,
+que já reagrega Escolha Certa/Platinum Point de RCA para Supervisor) —
+`FATO_CATFOCO_RCA` virou uma terceira fonte no mesmo `CONCATENATE`,
+usando `'$(vDataAux)'` literal na chave (não tem campo `DATA` nem
+`"Cod RCA"`, só `CodRca` já pronto pra `ApplyMap('MAP_RCA_SUP', ...)`,
+mesmo padrão do bloco 1.1). A Meta entra na PARTE 1.4 como um novo bloco
+`META_CATFOCO_SUP`, com uma chave nova (`_MetaCatFocoSup`, adicionada ao
+catálogo `TRF_BASE_SUP`) — os dois indicadores (ALWAYS/PAMPERS)
+compartilham o mesmo bloco porque o `Indicador` já vem do próprio QVD de
+Meta. `MetaCatFocoSup` entrou no `Alt()` da unificação (PARTE 1.5).
+
+**Correção adicional (2026-09-15, a pedido do usuário)**: o lado Faturado
+de CATFOCO PAMPERS checava `Sum(QtdPedidoLiquido) >= 10` (a mesma
+quantidade usada no lado Pedido) em vez de `Sum(QtdFaturadoLiquido) >=
+10` — cada trilha agora usa sua própria quantidade líquida
+(`QtdPedidoLiquido`="Qtd Vendida Liquida" no Pedido,
+`QtdFaturadoLiquido`="Qtd Faturada Liquida" no Faturado, ambas já
+carregadas em `TMP_VENDAS`).
+
+**Validado no Qlik Sense em 2026-09-15 (confirmado pelo usuário):
+recarga concluída sem erros** — os dois `TODO: verify` (campo
+`CODPLATAFORMA_PG` em `CAD_CLIENTE.QVD` e nome auto-gerado `F` da coluna
+de supervisor em `METACAT_FOCO`) resolveram corretamente.
+
 ## 7. Pontos em aberto para continuar o projeto
 
 - Confirmar se o valor de R$20 por positivação do **Escolha Certa
@@ -685,8 +751,8 @@ concluída sem erros, base de Supervisor funcionando.**
   `GANHO_FINAL_RCA` **ainda presente** (não deve sumir - é a base de
   premiação final do RCA), mas ligada a `BASE_RCA_INDICADORES_REALIZADO`
   e `PREMIACAO_GILLETTE_TRI` só por `CodRca`, sem loop entre as 3.
-- **CATFOCO ALWAYS / CATFOCO PAMPERS** (indicadores de Supervisor,
-  Setembro 2026): fonte de dado ainda não definida, ver seção 7.1.
+- **CATFOCO ALWAYS / CATFOCO PAMPERS** implementados e **validados no
+  Qlik Sense em 2026-09-15** (ver seção 7.3).
 - Reescrita da seção 7.2 **validada no Qlik Sense em 2026-09-15**
   (recarga concluída sem erros, base de Supervisor funcionando). Ainda
   vale, numa próxima conferência: (a) checar se as metas de Supervisor
