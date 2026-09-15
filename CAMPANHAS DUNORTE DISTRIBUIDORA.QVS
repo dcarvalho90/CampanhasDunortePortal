@@ -23,6 +23,35 @@ LOAD DISTINCT
     CODIGOSUPERVISOR
 FROM [lib://Carga_Duno/EXTRATOR/CADASTRO/CAD_RCA.QVD] (qvd);
 
+// MAP_SUP_FICTICIO: supervisores ficticios que juntam mais de um
+// supervisor REAL (CAD_RCA) na apuracao das metas mensais. Hoje so
+// Gerson: TOPCONTAS (cod real 73) + INTERIOR (cod real 74) -> ficticio
+// 7374, usado em PREM_SUP/SUP_DEVOL (aba CAMPANHAS) para reportar a
+// META/GANHO da maioria dos indicadores como o time inteiro do Gerson
+// somado.
+//
+// APLICA (usa este ApplyMap): indicadores MENSAIS em geral - Seção/
+// Departamento Faturamento e Positivacao (bloco 1.1), Escolha Certa/
+// Platinum Point/CatFoco (bloco 1.2), Metas de Seção/Departamento/
+// Platinum Point/Escolha Certa/CatFoco (bloco 1.4) e a devolucao mensal
+// da Faixa de Repasse (PARTE 3 da Premiacao Final do Supervisor).
+//
+// NAO APLICA (mantem o codigo REAL do supervisor, decisao do usuario
+// 2026-09-15): GILLETTE TRIMESTRAL (aba PREM_RANK_GILLETTE_SUP/
+// SUP_DEVOL_RANK usam 73, nao 7374 - ver comentario "GILLETTE - NAO
+// aplicar MAP_SUP_FICTICIO aqui" na Modelagem), MIX MINIMO e LISTING
+// INICIATIVAS--100% CARTEIRA (bloco 1.3 - usam o codigo real, igual ja
+// estava antes desta correcao).
+//
+// Default do ApplyMap = o proprio codigo, pra nao afetar nenhum outro
+// supervisor alem do Gerson.
+MAP_SUP_FICTICIO:
+MAPPING LOAD * INLINE [
+CodSupervisorReal, CodSupervisorFicticio
+73, 7374
+74, 7374
+];
+
 MAP_CLIENTE_PRINC:
 MAPPING
 LOAD DISTINCT
@@ -316,6 +345,15 @@ LET vMesFim    = vMesIni + 2;                 // ex: T3 -> 9
 LET vNomeArquivoSecao       = 'FATO_VENDAS_SECAO_TRIMESTRE_FIXO_$(vAno)_T$(vTrimestre).qvd';
 LET vNomeArquivoDepartamento = 'FATO_VENDAS_DEPARTAMENTO_TRIMESTRE_FIXO_$(vAno)_T$(vTrimestre).qvd';
 
+// Devolucao/Faturamento por RCA (sem quebra por Secao/Departamento) no
+// Trimestre Fixo - usado pelo ranking Gillette Trimestral na Modelagem
+// para calcular o % de devolucao na MESMA janela do indicador (trimestral),
+// em vez do % de devolucao do mes atual usado pelos demais indicadores.
+// Adicionado em 2026-09-15 a pedido do usuario. Mesmo padrao de
+// FATO_DEVOLUCAO_RCA/FATO_FATURAMENTO_RCA da secao "Vendas Mes Atual".
+LET vNomeArquivoDevolucaoRcaTri   = 'FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO_$(vAno)_T$(vTrimestre).qvd';
+LET vNomeArquivoFaturamentoRcaTri = 'FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO_$(vAno)_T$(vTrimestre).qvd';
+
 TRACE ==============================================;
 TRACE Gerando QVDs do Trimestre T$(vTrimestre)/$(vAno) - meses $(vMesIni) a $(vMesFim);
 TRACE ==============================================;
@@ -425,6 +463,55 @@ IF vQtdMesesCarregados > 0 THEN
     TRACE QVD de Departamento gerado com sucesso: $(vPathDestino)$(vNomeArquivoDepartamento);
 
     DROP TABLE FATO_VENDAS_TRIMESTRE_FIXO_DEPARTAMENTO;
+
+
+    ///////////////////////////////////////////////////////////////////////
+    // 5. DEVOLUCAO E FATURAMENTO POR RCA (SEM QUEBRA POR SECAO/DEPARTAMENTO)
+    //    NO TRIMESTRE FIXO
+    //    Mesmo padrao do FATO_DEVOLUCAO_RCA/FATO_FATURAMENTO_RCA da secao
+    //    "Vendas Mes Atual" (itens 4.1/4.2), so que agregado sobre os
+    //    mesmos 3 meses do trimestre ja carregados em TMP_VENDAS acima -
+    //    usado pelo ranking Gillette Trimestral (Modelagem) para calcular
+    //    o % de devolucao na MESMA janela do Realizado/Meta do indicador
+    //    (trimestral), em vez do % de devolucao do mes atual usado pelos
+    //    demais indicadores (mensais). Adicionado em 2026-09-15 a pedido
+    //    do usuario.
+    ///////////////////////////////////////////////////////////////////////
+    FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO:
+    LOAD
+        "Cod RCA",
+        'RCA'            AS TipoIndicador,
+        'TRIMESTRE FIXO' AS PeriodoIndicador,
+        'DEVOLUCAO'      AS ClasseIndicador,
+        Sum("Vlr  Devol") AS ValorDevolucao
+    RESIDENT TMP_VENDAS
+    GROUP BY
+        "Cod RCA";
+
+    STORE FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO INTO [$(vPathDestino)$(vNomeArquivoDevolucaoRcaTri)] (qvd);
+
+    TRACE QVD de Devolucao RCA Trimestre Fixo gerado com sucesso: $(vPathDestino)$(vNomeArquivoDevolucaoRcaTri);
+
+    DROP TABLE FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO;
+
+    FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO:
+    LOAD
+        "Cod RCA",
+        'RCA'            AS TipoIndicador,
+        'TRIMESTRE FIXO' AS PeriodoIndicador,
+        'FATURAMENTO'    AS ClasseIndicador,
+        Sum("Vlr Venda Liquida")              AS ValorPedido,
+        Sum("Vlr Tot Faturado Liquido Venda") AS ValorFaturado
+    RESIDENT TMP_VENDAS
+    GROUP BY
+        "Cod RCA";
+
+    STORE FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO INTO [$(vPathDestino)$(vNomeArquivoFaturamentoRcaTri)] (qvd);
+
+    TRACE QVD de Faturamento RCA Trimestre Fixo gerado com sucesso: $(vPathDestino)$(vNomeArquivoFaturamentoRcaTri);
+
+    DROP TABLE FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO;
+
     DROP TABLE TMP_VENDAS;
 
 ELSE
@@ -2936,30 +3023,57 @@ FROM [$(vPathDestinoRank)$(vNomeArquivoSupGrupo)]
        assim quem não bateu a meta ainda aparece na tabela final, só sem
        Posicao/Premio.
 
-       REGRA DE DEVOLUÇÃO: se PercDevolucaoRcaFaturado do RCA (calculado
-       em GANHO_FINAL_RCA) ultrapassar a Faixa máxima permitida (de
-       TRF_RCA_DEVOL_RANK), o % de atingimento usado no RANKING vira 0 -
-       empurrando o RCA pro fim do seu grupo naturalmente, sem removê-lo
-       da disputa nem alterar o PercAtingimentoFaturado original usado em
-       outros cálculos (ex: Ganho por indicador).
+       REGRA DE DEVOLUÇÃO: se o % de devolução do RCA ultrapassar a
+       Faixa máxima permitida (de TRF_RCA_DEVOL_RANK), o % de
+       atingimento usado no RANKING vira 0 - empurrando o RCA pro fim do
+       seu grupo naturalmente, sem removê-lo da disputa nem alterar o
+       PercAtingimentoFaturado original usado em outros cálculos (ex:
+       Ganho por indicador).
+
+       CORRIGIDO em 2026-09-15 (a pedido do usuário): esse % de
+       devolução usava GANHO_FINAL_RCA.PercDevolucaoRcaFaturado, que é
+       calculado sobre o MÊS ATUAL (mesma base usada na Faixa de
+       Repasse dos indicadores mensais) - só que o indicador GILLETTE
+       TRIMESTRAL tem Realizado/Meta apurados sobre o TRIMESTRE FIXO
+       (3 meses), então usar a devolução de só 1 mês para decidir se o
+       RCA é zerado no ranking trimestral misturava duas janelas de
+       tempo diferentes. Agora usa % devolução calculado sobre o MESMO
+       Trimestre Fixo do indicador (fonte: FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO
+       / FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO, novos QVDs gerados na aba
+       Transformação, bloco "5. DEVOLUCAO E FATURAMENTO POR RCA... NO
+       TRIMESTRE FIXO"). A Faixa de Repasse dos DEMAIS indicadores
+       (mensais) continua usando GANHO_FINAL_RCA.PercDevolucaoRcaFaturado
+       (mês atual) normalmente - não mudou.
 
 //////////////////////////////////////////////////////////////////////////*/
-MAP_PERC_DEVOL_FAT_RCA:
+TEMP_DEVOL_RCA_TRI:
+LOAD
+    "Cod RCA"      AS CodRca,
+    ValorDevolucao AS TotalDevolucaoRcaTri
+FROM [$(vPathDestino)$(vNomeArquivoDevolucaoRcaTri)]
+(qvd);
+
+TEMP_FAT_RCA_TRI:
+LOAD
+    "Cod RCA"     AS CodRca,
+    ValorFaturado AS TotalFaturadoRcaTri
+FROM [$(vPathDestino)$(vNomeArquivoFaturamentoRcaTri)]
+(qvd);
+
+// Único campo em comum é CodRca - mesmo padrão do TEMP_DEVOL_RCA/
+// TEMP_FAT_RCA (mês atual) na PARTE 2 lá em cima.
+LEFT JOIN (TEMP_DEVOL_RCA_TRI)
+LOAD * RESIDENT TEMP_FAT_RCA_TRI;
+
+DROP TABLE TEMP_FAT_RCA_TRI;
+
+MAP_PERC_DEVOL_FAT_RCA_TRI:
 MAPPING LOAD
     CodRca,
-    PercDevolucaoRcaFaturado
-RESIDENT GANHO_FINAL_RCA;
+    If(TotalFaturadoRcaTri > 0, TotalDevolucaoRcaTri / TotalFaturadoRcaTri) AS PercDevolucaoRcaFaturadoTri
+RESIDENT TEMP_DEVOL_RCA_TRI;
 
-// GANHO_FINAL_RCA permanece no modelo de dados de proposito (2026-08-27)
-// - e a base de premiacao final do RCA, usada para validar contra o
-// total de devolucao dele. NAO dropar aqui. O loop de associacao que
-// isso causava com BASE_RCA_INDICADORES_REALIZADO/PREMIACAO_GILLETTE_TRI
-// foi resolvido de outra forma: renomeando a COPIA de
-// PercDevolucaoRcaFaturado feita via ApplyMap dentro de BASE_GILLETTE_TRI
-// (ver comentario la embaixo) - GANHO_FINAL_RCA e BASE_RCA_INDICADORES_REALIZADO/
-// PREMIACAO_GILLETTE_TRI continuam ligadas SO por CodRca, que e a chave
-// correta (nenhum campo de valor deve ser reutilizado com o mesmo nome
-// em 2 tabelas que ficam associadas no modelo final).
+DROP TABLE TEMP_DEVOL_RCA_TRI;
 
 MAP_FAIXA_DEVOL_RANK:
 MAPPING LOAD
@@ -2985,30 +3099,31 @@ LOAD
     PercAtingimentoFaturado AS PercAtingimentoFaturadoGillette,
 
     // PercDevolucaoRcaFaturadoGillette (renomeado, bug corrigido em
-    // 2026-08-27): e so uma COPIA do valor de GANHO_FINAL_RCA (via
-    // ApplyMap) pra uso no calculo do ranking Gillette abaixo - usar o
-    // MESMO nome "PercDevolucaoRcaFaturado" que ja existe como campo
-    // real em GANHO_FINAL_RCA ligava essa tabela e PREMIACAO_GILLETTE_TRI
-    // por esse campo ALEM de CodRca, fechando um loop de 3 tabelas
-    // (GANHO_FINAL_RCA - PREMIACAO_GILLETTE_TRI - BASE_RCA_INDICADORES_REALIZADO
-    // - GANHO_FINAL_RCA). GANHO_FINAL_RCA continua no modelo (nao foi
-    // dropada - e a base de premiacao final do RCA usada para validar
-    // contra a devolucao).
-    ApplyMap('MAP_PERC_DEVOL_FAT_RCA', CodRca) AS PercDevolucaoRcaFaturadoGillette,
-    ApplyMap('MAP_FAIXA_DEVOL_RANK', CodRca)   AS FaixaDevolucaoRank,
+    // 2026-08-27; fonte trocada em 2026-09-15, ver comentario acima de
+    // MAP_PERC_DEVOL_FAT_RCA_TRI): campo calculado (nao mais uma copia
+    // de GANHO_FINAL_RCA) - usar o MESMO nome "PercDevolucaoRcaFaturado"
+    // que ja existe como campo real em GANHO_FINAL_RCA ligaria essa
+    // tabela e PREMIACAO_GILLETTE_TRI por esse campo ALEM de CodRca,
+    // fechando um loop de 3 tabelas (GANHO_FINAL_RCA -
+    // PREMIACAO_GILLETTE_TRI - BASE_RCA_INDICADORES_REALIZADO -
+    // GANHO_FINAL_RCA). GANHO_FINAL_RCA continua no modelo de dados de
+    // proposito (2026-08-27) - e a base de premiacao final do RCA,
+    // usada para validar contra o total de devolucao dele - NAO dropar.
+    ApplyMap('MAP_PERC_DEVOL_FAT_RCA_TRI', CodRca) AS PercDevolucaoRcaFaturadoGillette,
+    ApplyMap('MAP_FAIXA_DEVOL_RANK', CodRca)       AS FaixaDevolucaoRank,
 
     // Se não há Faixa cadastrada para o RCA, não penaliza (mantém o
     // Perc original) - ApplyMap sem default retorna Null, e a
     // comparação "> Null" nunca é verdadeira.
     If(
-        ApplyMap('MAP_PERC_DEVOL_FAT_RCA', CodRca) > ApplyMap('MAP_FAIXA_DEVOL_RANK', CodRca),
+        ApplyMap('MAP_PERC_DEVOL_FAT_RCA_TRI', CodRca) > ApplyMap('MAP_FAIXA_DEVOL_RANK', CodRca),
         0,
         PercAtingimentoFaturado
     ) AS PercAtingimentoFaturadoRank,
 
     // Flag explícita: o RCA foi zerado no rank por causa da devolução?
     If(
-        ApplyMap('MAP_PERC_DEVOL_FAT_RCA', CodRca) > ApplyMap('MAP_FAIXA_DEVOL_RANK', CodRca),
+        ApplyMap('MAP_PERC_DEVOL_FAT_RCA_TRI', CodRca) > ApplyMap('MAP_FAIXA_DEVOL_RANK', CodRca),
         1, 0
     ) AS FlagZeradoPorDevolucao
 
@@ -3228,9 +3343,21 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/T
         da campanha para a venda dele contar pro supervisor, que e
         justamente o ponto desta reescrita.
 
+        GILLETTE (fontes TRIMESTRE FIXO, Secao e Departamento) usa o
+        codigo REAL do supervisor (sem MAP_SUP_FICTICIO) - decisao do
+        usuario (2026-09-15): GILLETTE TRIMESTRAL apura so pelo
+        supervisor real (hoje só afeta Gerson: 73, nunca o ficticio
+        7374). As 4 fontes MESATUAL (Secao/Departamento Vendas +
+        Positivacao) passam pelo MAP_SUP_FICTICIO - os demais
+        indicadores do Gerson somam os codigos reais 73+74 sob o
+        ficticio 7374 (ver comentario da MAPPING no topo do script).
+        Para todo supervisor que nao seja ficticio, o ApplyMap tem
+        default = o proprio codigo (no-op).
+
 //////////////////////////////////////////////////////////////////////////*/
 REALIZADO_SUP_TEMP:
 LOAD
+    // GILLETTE - NAO aplicar MAP_SUP_FICTICIO aqui (codigo real)
     '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     ValorPedidoLiquido,
     ValorFaturadoLiquido
@@ -3239,7 +3366,7 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/F
 
 CONCATENATE (REALIZADO_SUP_TEMP)
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'), ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND')))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     ValorPedidoLiquido,
     ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_SECAO_MES_$(vDataCarg).qvd]
@@ -3247,6 +3374,7 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/F
 
 CONCATENATE (REALIZADO_SUP_TEMP)
 LOAD
+    // GILLETTE - NAO aplicar MAP_SUP_FICTICIO aqui (codigo real)
     '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     ValorPedidoLiquido,
     ValorFaturadoLiquido
@@ -3255,7 +3383,7 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/F
 
 CONCATENATE (REALIZADO_SUP_TEMP)
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'), ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND')))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     ValorPedidoLiquido,
     ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
@@ -3265,10 +3393,11 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/F
 // dele (mesma premissa que a versao anterior ja usava ao reagregar o
 // RCA). So conta 2x se o mesmo cliente for positivado por 2 RCAs do
 // mesmo supervisor - hoje nao acontece, porque o cliente tem RCA
-// principal unico (MAP_CLIENTE_PRINC).
+// principal unico (MAP_CLIENTE_PRINC). Positivacao e sempre MESATUAL -
+// passa pelo MAP_SUP_FICTICIO.
 CONCATENATE (REALIZADO_SUP_TEMP)
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'), ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND')))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     QtdClientesPositivadosPedido   AS ValorPedidoLiquido,
     QtdClientesPositivadosFaturado AS ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_POSITIVACAO_SECAO_MES_$(vDataCarg).qvd]
@@ -3276,7 +3405,7 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/F
 
 CONCATENATE (REALIZADO_SUP_TEMP)
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'), ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND')))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     QtdClientesPositivadosPedido   AS ValorPedidoLiquido,
     QtdClientesPositivadosFaturado AS ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_POSITIVACAO_DEPARTAMENTO_MES_$(vDataCarg).qvd]
@@ -3317,10 +3446,13 @@ DROP TABLE REALIZADO_SUP;
         literal na chave, mesmo padrao ja usado em REALIZADO_SUP_TEMP
         (bloco 1.1) para as fontes de venda/positivacao.
 
+        Os tres indicadores sao MESATUAL - passam pelo MAP_SUP_FICTICIO
+        (2026-09-15, ver comentario da MAPPING no topo do script).
+
 //////////////////////////////////////////////////////////////////////////*/
 REALIZADO_KPI_SUP_TEMP:
 LOAD
-    Date(MonthStart(DATA)) & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Indicador AS _RealizadoKpiSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'), ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND')))) & '|' & Indicador AS _RealizadoKpiSup,
     Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
     Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_ESCOLHA_CERTA_$(vDataCarg).QVD]
@@ -3328,7 +3460,7 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/T
 
 CONCATENATE (REALIZADO_KPI_SUP_TEMP)
 LOAD
-    Date(MonthStart(DATA)) & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Indicador AS _RealizadoKpiSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'), ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND')))) & '|' & Indicador AS _RealizadoKpiSup,
     Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
     Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_PLATINUM_POINT_$(vDataCarg).QVD]
@@ -3336,7 +3468,7 @@ FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/T
 
 CONCATENATE (REALIZADO_KPI_SUP_TEMP)
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & Indicador AS _RealizadoKpiSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', CodRca, '#ND'), ApplyMap('MAP_RCA_SUP', CodRca, '#ND')))) & '|' & Indicador AS _RealizadoKpiSup,
     Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
     Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_CATFOCO_RCA_MES_$(vDataCarg).qvd]
@@ -3363,6 +3495,14 @@ DROP TABLE REALIZADO_KPI_SUP;
     1.3 REALIZADO + META DE MIX MINIMO E LISTING INICIATIVAS
         Mesma fonte para Realizado e Meta (igual ao RCA) - cada uma
         ligada duas vezes, com chave e campo de valor proprios.
+
+        NAO aplicar MAP_SUP_FICTICIO aqui (decisao do usuario, 2026-09-
+        15): Mix Minimo e Listing Iniciativas usam o codigo REAL do
+        supervisor, igual ja estava antes - mesma exececao de GILLETTE
+        TRIMESTRAL (bloco 1.1). So os demais indicadores mensais
+        (Seção/Departamento Faturamento/Positivacao, Escolha Certa,
+        Platinum Point, CatFoco, e a devolucao mensal na PARTE 3 da
+        Premiacao do Supervisor) somam 73+74 sob o ficticio 7374.
 
 //////////////////////////////////////////////////////////////////////////*/
 REALIZADO_MIX_SUP_TEMP:
@@ -3462,13 +3602,19 @@ DROP TABLE META_LISTING_SUP;
         PLATINUM POINT, ESCOLHA CERTA)
         Todas as fontes de meta ja trazem a coluna de supervisor da
         propria planilha (SV / G / F14), entao aqui o CodSupervisor vem
-        do QVD, sem ApplyMap. Todas agregadas (Sum) por chave antes do
-        join - a meta do supervisor e a soma das metas dos RCAs dele.
+        do QVD, sem ApplyMap('MAP_RCA_SUP',...). Todas agregadas (Sum)
+        por chave antes do join - a meta do supervisor e a soma das
+        metas dos RCAs dele.
+
+        MESATUAL passa pelo MAP_SUP_FICTICIO (2026-09-15) - EXCECAO em
+        META_GILLETTE_TRI_SUP_TEMP abaixo, onde a mesma fonte mistura
+        linhas TRIMESTRE FIXO (Gillette, codigo REAL) e MESATUAL
+        (ficticio) na mesma tabela, dependendo da Secao da linha.
 
 //////////////////////////////////////////////////////////////////////////*/
 META_SECAO_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaSup,
     Meta
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_MES_$(vDataCarg).qvd]
 (qvd);
@@ -3489,9 +3635,15 @@ DROP TABLE META_SECAO_SUP;
 
 // Gillette Trimestral: mesma regra do RCA - as secoes 93/94/96/97/98
 // viram periodo TRIMESTRE FIXO e a meta mensal e multiplicada por 3.
+// CodSupervisor so passa pelo MAP_SUP_FICTICIO nas linhas MESATUAL
+// (demais secoes) - as linhas TRIMESTRE FIXO (Gillette, secoes
+// 93/94/96/97/98) mantem o codigo REAL, mesma decisao do usuario
+// (2026-09-15) aplicada em REALIZADO_SUP_TEMP (bloco 1.1).
 META_GILLETTE_TRI_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Secao")) & '|' &
+    '$(vDataAux)' & '|' &
+    Text(Trim(IF(Match("Cod Secao",93,94,96,97,98), CodSupervisor, ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor)))) & '|' &
+    Text(Trim("Cod Secao")) & '|' &
     IF(Match("Cod Secao",93,94,96,97,98),'TRIMESTRE FIXO',PeriodoIndicador)
     &'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaSup,
     IF(Match("Cod Secao",93,94,96,97,98),Meta*3,Meta) AS MetaGil
@@ -3514,7 +3666,7 @@ DROP TABLE META_GILLETTE_TRI_SUP;
 
 META_DEP_FAT_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaDepSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaDepSup,
     MetaFat
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
 (qvd);
@@ -3535,7 +3687,7 @@ DROP TABLE META_DEP_FAT_SUP;
 
 META_DEP_POS_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'POSITIVACAO' AS _MetaDepPosSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'POSITIVACAO' AS _MetaDepPosSup,
     MetaPos
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
 (qvd);
@@ -3556,7 +3708,7 @@ DROP TABLE META_DEP_POS_SUP;
 
 META_PP_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & 'PLATINUM POINTS' AS _MetaPPSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & 'PLATINUM POINTS' AS _MetaPPSup,
     MetaPlatinumPoint
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_PLATINUM_POINT_MES_$(vDataCarg).qvd]
 (qvd);
@@ -3577,7 +3729,7 @@ DROP TABLE META_PP_SUP;
 
 META_EC_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & 'FAIXA ESCOLHA CERTA' AS _MetaECSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & 'FAIXA ESCOLHA CERTA' AS _MetaECSup,
     MetaEscolhaCerta
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_ESCOLHA_CERTA_MES_$(vDataCarg).qvd]
 (qvd);
@@ -3603,7 +3755,7 @@ DROP TABLE META_EC_SUP;
 // com um unico bloco.
 META_CATFOCO_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & Indicador AS _MetaCatFocoSup,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & Indicador AS _MetaCatFocoSup,
     MetaCatFoco
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_CATFOCO_MES_$(vDataCarg).qvd]
 (qvd);
@@ -3728,10 +3880,18 @@ RENAME TABLE BASE_SUP_INDICADORES_REALIZADO_GANHO TO BASE_SUP_INDICADORES_REALIZ
     valores BRUTOS, nao os liquidos, para o denominador nao ficar
     circular.
 
+    Esta e a devolucao do MES ATUAL, usada na Faixa de Repasse dos
+    indicadores mensais (PARTE 4 abaixo, via SUP_DEVOL) - passa pelo
+    MAP_SUP_FICTICIO (2026-09-15) porque SUP_DEVOL cadastra a faixa de
+    repasse do Gerson sob o codigo ficticio 7374, nao os codigos reais
+    73/74. O ranking Gillette Trimestral usa uma devolucao SEPARADA,
+    calculada no codigo REAL (ver MAP_PERC_DEVOL_FAT_SUP_TRI, bloco
+    "PREMIACAO GILLETTE TRIMESTRAL" mais abaixo).
+
 //////////////////////////////////////////////////////////////////////////*/
 TEMP_DEVOL_RCA_SUP:
 LOAD
-    ApplyMap('MAP_RCA_SUP', CodRca, '#ND') AS CodSupervisor,
+    ApplyMap('MAP_SUP_FICTICIO', ApplyMap('MAP_RCA_SUP', CodRca, '#ND'), ApplyMap('MAP_RCA_SUP', CodRca, '#ND')) AS CodSupervisor,
     TotalDevolucaoRca,
     TotalPedidoRca,
     TotalFaturadoRca
@@ -3887,19 +4047,87 @@ FROM [$(vPathDestinoRankSup)$(vNomeArquivoSupGrupoSup)]
 /*//////////////////////////////////////////////////////////////////////////
 
     2. BASE DE SUPERVISORES COM O INDICADOR (todos, sem filtro de meta)
-       Mesma regra de devolucao do RCA: se PercDevolucaoSupFaturado do
-       supervisor (calculado em GANHO_FINAL_SUP) ultrapassar a Faixa
-       maxima permitida (de TRF_SUP_DEVOL_RANK), o % de atingimento usado
-       no RANKING vira 0 - empurra o supervisor pro fim do seu grupo sem
-       remove-lo da disputa nem alterar o PercAtingimentoFaturadoSup
-       original usado em outros calculos (ex: Ganho por indicador).
+       Mesma regra de devolucao do RCA: se o % de devolucao do
+       supervisor ultrapassar a Faixa maxima permitida (de
+       TRF_SUP_DEVOL_RANK), o % de atingimento usado no RANKING vira 0 -
+       empurra o supervisor pro fim do seu grupo sem remove-lo da
+       disputa nem alterar o PercAtingimentoFaturadoSup original usado
+       em outros calculos (ex: Ganho por indicador).
+
+       CORRIGIDO em 2026-09-15 (achado pelo usuario revisando o script):
+       este % de devolucao usava GANHO_FINAL_SUP.PercDevolucaoSupFaturado
+       - que tem DOIS problemas para o ranking Gillette Trimestral do
+       Supervisor:
+         (a) janela errada - e calculado sobre o MES ATUAL (mesmo
+             problema ja corrigido no ranking do RCA acima, ver
+             MAP_PERC_DEVOL_FAT_RCA_TRI), nao sobre o Trimestre Fixo do
+             indicador;
+         (b) mesmo depois de trocar a janela, a agregacao RCA->Supervisor
+             tem que somar TODOS os RCAs do time do supervisor (via
+             MAP_RCA_SUP), nao so os RCAs que individualmente tem
+             GILLETTE TRIMESTRAL cadastrado em PREM_RCA - a campanha do
+             Supervisor e o resultado do time inteiro, igual ao Realizado
+             (PercAtingimentoFaturadoGilletteSup, que ja vem de
+             BASE_SUP_INDICADORES_REALIZADO/REALIZADO_SUP_TEMP - esse já
+             soma TODOS os RCAs corretamente, direto da FATO_VENDAS_
+             SECAO_TRIMESTRE_FIXO, sem depender de cada RCA ter o
+             indicador individualmente).
+       Corrigido agregando FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO/
+       FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO (RCA, Trimestre Fixo, ja
+       geradas na Transformacao) direto por CodSupervisor via
+       ApplyMap('MAP_RCA_SUP', ...) - mesmo padrao de agregacao usado em
+       toda a base de Supervisor (agregar ANTES do LEFT JOIN, pois varios
+       RCAs colapsam no mesmo supervisor).
 
 //////////////////////////////////////////////////////////////////////////*/
-MAP_PERC_DEVOL_FAT_SUP:
+TEMP_DEVOL_SUP_TRI:
+LOAD
+    ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND') AS CodSupervisor,
+    ValorDevolucao                             AS TotalDevolucaoRcaTri
+FROM [$(vPathDestino)$(vNomeArquivoDevolucaoRcaTri)]
+(qvd);
+
+TEMP_DEVOL_SUP_TRI_AGG:
+NoConcatenate
+LOAD
+    CodSupervisor,
+    Sum(TotalDevolucaoRcaTri) AS TotalDevolucaoSupTri
+RESIDENT TEMP_DEVOL_SUP_TRI
+GROUP BY CodSupervisor;
+
+DROP TABLE TEMP_DEVOL_SUP_TRI;
+
+TEMP_FAT_SUP_TRI:
+LOAD
+    ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND') AS CodSupervisor,
+    ValorFaturado                              AS TotalFaturadoRcaTri
+FROM [$(vPathDestino)$(vNomeArquivoFaturamentoRcaTri)]
+(qvd);
+
+TEMP_FAT_SUP_TRI_AGG:
+NoConcatenate
+LOAD
+    CodSupervisor,
+    Sum(TotalFaturadoRcaTri) AS TotalFaturadoSupTri
+RESIDENT TEMP_FAT_SUP_TRI
+GROUP BY CodSupervisor;
+
+DROP TABLE TEMP_FAT_SUP_TRI;
+
+// Unico campo em comum e CodSupervisor - mesmo padrao do TEMP_DEVOL_RCA_TRI/
+// TEMP_FAT_RCA_TRI la em cima.
+LEFT JOIN (TEMP_DEVOL_SUP_TRI_AGG)
+LOAD * RESIDENT TEMP_FAT_SUP_TRI_AGG;
+
+DROP TABLE TEMP_FAT_SUP_TRI_AGG;
+
+MAP_PERC_DEVOL_FAT_SUP_TRI:
 MAPPING LOAD
     CodSupervisor,
-    PercDevolucaoSupFaturado
-RESIDENT GANHO_FINAL_SUP;
+    If(TotalFaturadoSupTri > 0, TotalDevolucaoSupTri / TotalFaturadoSupTri) AS PercDevolucaoSupFaturadoTri
+RESIDENT TEMP_DEVOL_SUP_TRI_AGG;
+
+DROP TABLE TEMP_DEVOL_SUP_TRI_AGG;
 
 MAP_FAIXA_DEVOL_RANK_SUP:
 MAPPING LOAD
@@ -3914,21 +4142,21 @@ LOAD
     ApplyMap('MAP_GRUPO_GILLETTE_SUP', CodSupervisor, '#ND') AS GrupoRankSup,
     PercAtingimentoFaturadoSup AS PercAtingimentoFaturadoGilletteSup,
 
-    ApplyMap('MAP_PERC_DEVOL_FAT_SUP', CodSupervisor) AS PercDevolucaoSupFaturadoGilletteSup,
+    ApplyMap('MAP_PERC_DEVOL_FAT_SUP_TRI', CodSupervisor) AS PercDevolucaoSupFaturadoGilletteSup,
     ApplyMap('MAP_FAIXA_DEVOL_RANK_SUP', CodSupervisor) AS FaixaDevolucaoRankSup,
 
     // Se nao ha Faixa cadastrada para o supervisor, nao penaliza (mantem
     // o Perc original) - ApplyMap sem default retorna Null, e a
     // comparacao "> Null" nunca e verdadeira.
     If(
-        ApplyMap('MAP_PERC_DEVOL_FAT_SUP', CodSupervisor) > ApplyMap('MAP_FAIXA_DEVOL_RANK_SUP', CodSupervisor),
+        ApplyMap('MAP_PERC_DEVOL_FAT_SUP_TRI', CodSupervisor) > ApplyMap('MAP_FAIXA_DEVOL_RANK_SUP', CodSupervisor),
         0,
         PercAtingimentoFaturadoSup
     ) AS PercAtingimentoFaturadoRankSup,
 
     // Flag explicita: o supervisor foi zerado no rank por causa da devolucao?
     If(
-        ApplyMap('MAP_PERC_DEVOL_FAT_SUP', CodSupervisor) > ApplyMap('MAP_FAIXA_DEVOL_RANK_SUP', CodSupervisor),
+        ApplyMap('MAP_PERC_DEVOL_FAT_SUP_TRI', CodSupervisor) > ApplyMap('MAP_FAIXA_DEVOL_RANK_SUP', CodSupervisor),
         1, 0
     ) AS FlagZeradoPorDevolucaoSup
 
@@ -4011,35 +4239,245 @@ DROP TABLE BASE_GILLETTE_TRI_SUP;
 
 ///$tab Carregamento
 ///////////////////////////////////////////////////////////////////////////
-// CARREGAMENTO - TABELAS FINAIS DO MODELO DE DADOS
-// Camada só de organização/documentação - nenhuma tabela é gravada em
-// QVD aqui, nenhuma lógica é executada. As tabelas abaixo, já
-// produzidas na aba Modelagem, permanecem residentes e são o que
-// efetivamente carrega no modelo de dados do app Qlik (associadas
-// entre si e com as demais tabelas via os campos em comum, ex: CodRca,
-// CodSupervisor):
+// CARREGAMENTO - HISTORIZACAO + TABELAS FINAIS DO MODELO DE DADOS
+// -------------------------------------------------------------
+// ATE 2026-09-15, esta aba so tinha comentario - nenhuma tabela era
+// gravada em QVD aqui. Cada recarga calculava as 6 tabelas abaixo so
+// para o mes/trimestre ATUAL (Today()) e elas viviam so na memoria do
+// Qlik: a proxima recarga substituia TUDO, sem nenhum jeito de consultar
+// um mes fechado depois que o mes seguinte comecava a ser processado.
+//
+// IMPORTANTE: os QVDs INTERMEDIARIOS gerados na aba Transformacao
+// (FATO_VENDAS_*, TRF_PREM_*, TRF_BASE_*_INDICADORES etc.) JA SAO
+// historicos - o nome de cada arquivo leva o ano/mes
+// ($(vAno)_$(vMesAtual) ou $(vDataCarg)), entao a recarga de um mes novo
+// nunca sobrescreve o QVD do mes anterior, so cria um arquivo com nome
+// diferente. O problema estava so aqui: a Modelagem le e recalcula
+// sempre o mes atual, mas nunca acumulava o resultado final de volta.
+//
+// CORRECAO (2026-09-15, a pedido do usuario): cada uma das 6 tabelas
+// finais agora e acumulada num QVD historico proprio
+// (HISTORICO_<TABELA>.qvd, na mesma pasta $(vPathCampanhas)) atraves do
+// padrao classico de QVD incremental do Qlik:
+//   1. Le o QVD historico (se existir) SEM as linhas do periodo atual
+//      (filtro por mes/trimestre - ver detalhe por tabela abaixo) -
+//      assim, se o mesmo periodo for recarregado de novo (ex: correcao
+//      de dado no meio do mes), a versao antiga desse periodo e
+//      descartada e substituida pela nova, em vez de duplicar/somar.
+//   2. Concatena com a tabela recem-calculada (que ja esta em memoria,
+//      sempre referente ao periodo atual).
+//   3. Grava o resultado (periodos antigos + periodo atual) de volta no
+//      mesmo QVD historico - o arquivo cresce um periodo por recarga.
+// O modelo do Qlik, apos este bloco, fica com TODOS os periodos ja
+// processados - o dashboard passa a poder filtrar por mes/trimestre
+// (campo de periodo de cada tabela, ver abaixo) para consultar meses
+// fechados.
+//
+// SCHEMA EVOLUINDO: se um campo novo for adicionado a alguma destas 6
+// tabelas no futuro, os periodos antigos do QVD historico simplesmente
+// carregam Null nesse campo novo (CONCATENATE por nome de campo,
+// comportamento padrao do Qlik) - nao precisa de migracao manual.
 //
 //   - BASE_RCA_INDICADORES_REALIZADO: Realizado + Meta + Ganho por
-//     RCA/Indicador/Data (grão: DATA + CodRca + Indicador).
+//     RCA/Indicador/Data (grão: DATA + CodRca + Indicador). Já tinha
+//     campo de período (`DATA`, mensal) - dedup por mês.
 //   - PREMIACAO_GILLETTE_TRI: Realizado + ranking + prêmio da campanha
-//     Gillette Trimestral por RCA (grão: CodRca).
+//     Gillette Trimestral por RCA (grão: CodRca). Ganhou o campo
+//     `TrimestreRef` (ex: "2026-T3") - dedup por TRIMESTRE (é uma
+//     apuração trimestral, recalculada a cada mês do mesmo trimestre;
+//     faz sentido o registro do trimestre ser substituído, não somado,
+//     enquanto o trimestre não fecha).
 //   - GANHO_FINAL_RCA: Total de ganho por RCA já com % de repasse por
-//     devolução aplicado (grão: CodRca).
+//     devolução aplicado (grão: CodRca). Ganhou o campo `DataRef`
+//     (mensal) - dedup por mês.
 //   - BASE_SUP_INDICADORES_REALIZADO: Realizado + Meta + Ganho agregados
 //     por Supervisor/Indicador/Data (grão: DataSup + CodSupervisor +
 //     IndicadorSup) - liga com BASE_RCA_INDICADORES_REALIZADO só por
 //     CodSupervisor, de propósito (ver comentário no bloco de premiação
-//     do supervisor, na aba Modelagem).
+//     do supervisor, na aba Modelagem). Já tinha campo de período
+//     (`DataSup`, mensal) - dedup por mês.
 //   - GANHO_FINAL_SUP: Total de ganho por Supervisor já com % de
 //     repasse por devolução aplicado (grão: CodSupervisor) - mesma
-//     lógica de GANHO_FINAL_RCA, a nível de Supervisor.
+//     lógica de GANHO_FINAL_RCA, a nível de Supervisor. Ganhou o campo
+//     `DataRefSup` (mensal, sufixo "Sup" para não virar campo em comum
+//     "extra" com GANHO_FINAL_RCA - mesmo cuidado de sempre neste
+//     script) - dedup por mês.
 //   - PREMIACAO_GILLETTE_TRI_SUP: Realizado + ranking + prêmio da
 //     campanha Gillette Trimestral por SUPERVISOR (grão: CodSupervisor,
 //     exposto como CodSupervisorGilletteSup) - ranking entre supervisores
 //     do mesmo grupo (aba PREM_RANK_GILLETTE_SUP), não entre RCAs.
 //     Tabela isolada de propósito (nenhum campo em comum com as demais,
-//     mesmo padrão da PREMIACAO_GILLETTE_TRI do RCA).
+//     mesmo padrão da PREMIACAO_GILLETTE_TRI do RCA). Ganhou o campo
+//     `TrimestreRefSup` - dedup por TRIMESTRE, mesma lógica da
+//     PREMIACAO_GILLETTE_TRI do RCA.
+//
+// **Ainda não validado no Qlik Sense** (2026-09-15).
 ///////////////////////////////////////////////////////////////////////////
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    1. BASE_RCA_INDICADORES_REALIZADO (ja tem DATA, grao mensal)
+
+//////////////////////////////////////////////////////////////////////////*/
+LET vArquivoHistBaseRca = '$(vPathCampanhas)HISTORICO_BASE_RCA_INDICADORES_REALIZADO.qvd';
+
+IF Not IsNull(FileSize('$(vArquivoHistBaseRca)')) THEN
+    CONCATENATE (BASE_RCA_INDICADORES_REALIZADO)
+    LOAD *
+    FROM [$(vArquivoHistBaseRca)]
+    (qvd)
+    WHERE MonthStart(DATA) <> MonthStart(Today());
+ENDIF
+
+STORE BASE_RCA_INDICADORES_REALIZADO INTO [$(vArquivoHistBaseRca)] (qvd);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    2. BASE_SUP_INDICADORES_REALIZADO (ja tem DataSup, grao mensal)
+
+//////////////////////////////////////////////////////////////////////////*/
+LET vArquivoHistBaseSup = '$(vPathCampanhas)HISTORICO_BASE_SUP_INDICADORES_REALIZADO.qvd';
+
+IF Not IsNull(FileSize('$(vArquivoHistBaseSup)')) THEN
+    CONCATENATE (BASE_SUP_INDICADORES_REALIZADO)
+    LOAD *
+    FROM [$(vArquivoHistBaseSup)]
+    (qvd)
+    WHERE MonthStart(DataSup) <> MonthStart(Today());
+ENDIF
+
+STORE BASE_SUP_INDICADORES_REALIZADO INTO [$(vArquivoHistBaseSup)] (qvd);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    3. GANHO_FINAL_RCA (sem campo de periodo ate 2026-09-15 - adicionado
+       DataRef abaixo, grao mensal)
+
+//////////////////////////////////////////////////////////////////////////*/
+GANHO_FINAL_RCA_HIST:
+NoConcatenate
+LOAD
+    *,
+    Date(MonthStart(Today())) AS DataRef
+RESIDENT GANHO_FINAL_RCA;
+
+DROP TABLE GANHO_FINAL_RCA;
+RENAME TABLE GANHO_FINAL_RCA_HIST TO GANHO_FINAL_RCA;
+
+LET vArquivoHistGanhoRca = '$(vPathCampanhas)HISTORICO_GANHO_FINAL_RCA.qvd';
+
+IF Not IsNull(FileSize('$(vArquivoHistGanhoRca)')) THEN
+    CONCATENATE (GANHO_FINAL_RCA)
+    LOAD *
+    FROM [$(vArquivoHistGanhoRca)]
+    (qvd)
+    WHERE MonthStart(DataRef) <> MonthStart(Today());
+ENDIF
+
+STORE GANHO_FINAL_RCA INTO [$(vArquivoHistGanhoRca)] (qvd);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    4. GANHO_FINAL_SUP (sem campo de periodo ate 2026-09-15 - adicionado
+       DataRefSup abaixo, grao mensal). Sufixo "Sup" no nome do campo -
+       sem ele, DataRef ficaria com o MESMO nome em GANHO_FINAL_RCA e
+       GANHO_FINAL_SUP, criando uma chave sintetica nova entre as duas
+       (elas hoje nao compartilham nenhum campo direto).
+
+//////////////////////////////////////////////////////////////////////////*/
+GANHO_FINAL_SUP_HIST:
+NoConcatenate
+LOAD
+    *,
+    Date(MonthStart(Today())) AS DataRefSup
+RESIDENT GANHO_FINAL_SUP;
+
+DROP TABLE GANHO_FINAL_SUP;
+RENAME TABLE GANHO_FINAL_SUP_HIST TO GANHO_FINAL_SUP;
+
+LET vArquivoHistGanhoSup = '$(vPathCampanhas)HISTORICO_GANHO_FINAL_SUP.qvd';
+
+IF Not IsNull(FileSize('$(vArquivoHistGanhoSup)')) THEN
+    CONCATENATE (GANHO_FINAL_SUP)
+    LOAD *
+    FROM [$(vArquivoHistGanhoSup)]
+    (qvd)
+    WHERE MonthStart(DataRefSup) <> MonthStart(Today());
+ENDIF
+
+STORE GANHO_FINAL_SUP INTO [$(vArquivoHistGanhoSup)] (qvd);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    5. PREMIACAO_GILLETTE_TRI (sem campo de periodo ate 2026-09-15 -
+       adicionado TrimestreRef abaixo, grao TRIMESTRAL - nao mensal,
+       porque o indicador em si e uma apuracao do trimestre corrente,
+       recalculada a cada mes que passa dentro do MESMO trimestre;
+       faz sentido substituir o registro do trimestre a cada recarga
+       (ranking mais atualizado), nao acumular 3 linhas por trimestre.
+       vAno/vTrimestre aqui refletem o trimestre ATUAL - ultima
+       atribuicao na aba Modelagem (bloco TRF_BASE_RCA), sem nenhuma
+       reatribuicao depois.)
+
+//////////////////////////////////////////////////////////////////////////*/
+PREMIACAO_GILLETTE_TRI_HIST:
+NoConcatenate
+LOAD
+    *,
+    '$(vAno)-T$(vTrimestre)' AS TrimestreRef
+RESIDENT PREMIACAO_GILLETTE_TRI;
+
+DROP TABLE PREMIACAO_GILLETTE_TRI;
+RENAME TABLE PREMIACAO_GILLETTE_TRI_HIST TO PREMIACAO_GILLETTE_TRI;
+
+LET vArquivoHistGilletteTri = '$(vPathCampanhas)HISTORICO_PREMIACAO_GILLETTE_TRI.qvd';
+
+IF Not IsNull(FileSize('$(vArquivoHistGilletteTri)')) THEN
+    CONCATENATE (PREMIACAO_GILLETTE_TRI)
+    LOAD *
+    FROM [$(vArquivoHistGilletteTri)]
+    (qvd)
+    WHERE TrimestreRef <> '$(vAno)-T$(vTrimestre)';
+ENDIF
+
+STORE PREMIACAO_GILLETTE_TRI INTO [$(vArquivoHistGilletteTri)] (qvd);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    6. PREMIACAO_GILLETTE_TRI_SUP (mesma logica do item 5, campo
+       TrimestreRefSup - sufixo "Sup" pelo mesmo motivo do item 4;
+       PREMIACAO_GILLETTE_TRI_SUP e isolada de proposito no modelo (sem
+       campo em comum com as demais) e deve continuar assim.)
+
+//////////////////////////////////////////////////////////////////////////*/
+PREMIACAO_GILLETTE_TRI_SUP_HIST:
+NoConcatenate
+LOAD
+    *,
+    '$(vAno)-T$(vTrimestre)' AS TrimestreRefSup
+RESIDENT PREMIACAO_GILLETTE_TRI_SUP;
+
+DROP TABLE PREMIACAO_GILLETTE_TRI_SUP;
+RENAME TABLE PREMIACAO_GILLETTE_TRI_SUP_HIST TO PREMIACAO_GILLETTE_TRI_SUP;
+
+LET vArquivoHistGilletteTriSup = '$(vPathCampanhas)HISTORICO_PREMIACAO_GILLETTE_TRI_SUP.qvd';
+
+IF Not IsNull(FileSize('$(vArquivoHistGilletteTriSup)')) THEN
+    CONCATENATE (PREMIACAO_GILLETTE_TRI_SUP)
+    LOAD *
+    FROM [$(vArquivoHistGilletteTriSup)]
+    (qvd)
+    WHERE TrimestreRefSup <> '$(vAno)-T$(vTrimestre)';
+ENDIF
+
+STORE PREMIACAO_GILLETTE_TRI_SUP INTO [$(vArquivoHistGilletteTriSup)] (qvd);
+
+
 TRACE ==============================================;
 TRACE Carga do modelo de dados concluida.;
 TRACE ==============================================;

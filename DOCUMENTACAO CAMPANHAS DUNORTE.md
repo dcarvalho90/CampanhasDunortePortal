@@ -735,8 +735,276 @@ recarga concluída sem erros** — os dois `TODO: verify` (campo
 `CODPLATAFORMA_PG` em `CAD_CLIENTE.QVD` e nome auto-gerado `F` da coluna
 de supervisor em `METACAT_FOCO`) resolveram corretamente.
 
+## 7.4 Setembro 2026 — Histórico das tabelas finais (aba Carregamento)
+
+**Problema (achado pelo usuário, 2026-09-15)**: "se eu quiser consultar
+meses anteriores não vou ter acesso" — cada recarga calculava as 6
+tabelas finais só para o mês/trimestre **atual** (`Today()`) e elas só
+existiam na memória do Qlik; a recarga seguinte substituía tudo, sem
+nenhum jeito de olhar um mês fechado depois que o mês seguinte começava
+a ser processado.
+
+**Diagnóstico importante**: os QVDs **intermediários** da Transformação
+(`FATO_VENDAS_*`, `TRF_PREM_*`, `TRF_BASE_*_INDICADORES` etc.) **já são
+históricos** — o nome de cada arquivo leva o ano/mês
+(`$(vAno)_$(vMesAtual)` ou `$(vDataCarg)`), então a recarga de um mês
+novo nunca sobrescreve o QVD do mês anterior, só cria um arquivo com nome
+diferente. O buraco estava só na Modelagem/Carregamento: liam e
+recalculavam sempre o mês atual, mas nunca acumulavam o resultado final
+de volta em disco.
+
+**Correção aplicada** (aba Carregamento, antes só comentário/sem lógica —
+agora com o padrão clássico de QVD incremental do Qlik para cada uma das
+6 tabelas finais):
+
+1. Lê o QVD histórico da tabela (`HISTORICO_<TABELA>.qvd`, mesma pasta
+   `$(vPathCampanhas)`), se existir, **excluindo** as linhas do período
+   atual (evita duplicar se o mesmo período for recarregado de novo —
+   decisão do usuário: **substituir**, não somar).
+2. `CONCATENATE` com a tabela recém-calculada (sempre referente ao
+   período atual).
+3. `STORE` do resultado (períodos antigos + atual) de volta no mesmo QVD
+   histórico — o arquivo cresce um período por recarga.
+
+**Campo de período por tabela** (usado para o filtro de exclusão acima e
+para o dashboard poder filtrar por mês/trimestre):
+
+| Tabela | Campo de período | Grão do período | Observação |
+|---|---|---|---|
+| `BASE_RCA_INDICADORES_REALIZADO` | `DATA` (já existia) | Mensal | — |
+| `BASE_SUP_INDICADORES_REALIZADO` | `DataSup` (já existia) | Mensal | — |
+| `GANHO_FINAL_RCA` | `DataRef` (novo) | Mensal | — |
+| `GANHO_FINAL_SUP` | `DataRefSup` (novo) | Mensal | Sufixo `Sup` — sem ele, `DataRef` viraria campo em comum **novo** com `GANHO_FINAL_RCA` (hoje as duas não compartilham nenhum campo direto), criando uma chave sintética indesejada. |
+| `PREMIACAO_GILLETTE_TRI` | `TrimestreRef` (novo, ex: `"2026-T3"`) | **Trimestral** | O indicador é uma apuração do trimestre corrente, recalculada a cada mês do mesmo trimestre — o registro do trimestre é **substituído** a cada recarga (ranking mais atualizado), não vira 3 linhas por trimestre. |
+| `PREMIACAO_GILLETTE_TRI_SUP` | `TrimestreRefSup` (novo) | Trimestral | Mesma lógica, sufixo `Sup` pelo mesmo motivo de `GANHO_FINAL_SUP`. |
+
+**Schema evoluindo**: se um campo novo for adicionado a alguma destas 6
+tabelas no futuro, os períodos antigos do QVD histórico simplesmente
+carregam `Null` nesse campo novo (`CONCATENATE` por nome de campo,
+comportamento padrão do Qlik) — não precisa de migração manual.
+
+**Impacto no dashboard**: a partir de agora essas 6 tabelas trazem
+**múltiplos períodos simultaneamente** no modelo (não só o mês/trimestre
+atual). Qualquer gráfico/KPI que hoje usa `CodRca`/`CodSupervisor` como
+dimensão **sem filtrar por período** (`DATA`/`DataSup`/`DataRef`/
+`DataRefSup`/`TrimestreRef`/`TrimestreRefSup`) passa a **somar todos os
+períodos já processados juntos** — o usuário está ciente e vai ajustar os
+objetos do app para filtrar/selecionar o período (aceito explicitamente
+ao decidir adicionar o campo de período às 4 tabelas que não tinham).
+
+**Primeira carga**: como os arquivos `HISTORICO_*.qvd` ainda não existem,
+a primeira recarga após esta mudança começa o histórico só com o mês/
+trimestre atual — meses **anteriores** a essa mudança não são
+recuperados retroativamente (o histórico só passa a acumular a partir de
+agora).
+
+**Validado no Qlik Sense em 2026-09-15 (confirmado pelo usuário)**: os 6
+QVDs `HISTORICO_*.qvd` foram gravados com sucesso na primeira recarga.
+**Ainda por confirmar**: uma segunda recarga no mesmo mês/trimestre
+substitui (em vez de duplicar) o período atual, e o comportamento de
+`CodRca`/`CodSupervisor` sem filtro de período nos objetos do app (ver
+"Impacto no dashboard" acima) — ver item correspondente na seção 7.
+
+## 7.5 Setembro 2026 — % Devolução do ranking Gillette Trimestral trocado para o Trimestre Fixo
+
+**Dúvida do usuário (2026-09-15)**: a devolução usada para decidir se um
+RCA é zerado no ranking Gillette Trimestral era do Mês Atual ou do
+Trimestre Fixo (mesma janela do Realizado/Meta do indicador)?
+
+**Resposta encontrada no código (antes da correção)**: **Mês Atual**, nos
+dois usos que existiam — tanto a Faixa de Repasse geral (todos os
+indicadores) quanto a regra de zerar o RCA no ranking Gillette usavam o
+mesmo campo `PercDevolucaoRcaFaturado` de `GANHO_FINAL_RCA`, calculado a
+partir de `FATO_DEVOLUCAO_RCA_MES`/`FATO_FATURAMENTO_RCA_MES` (só o mês
+corrente). Isso é correto para os indicadores mensais (cuja Meta/
+Realizado também são do mês), mas **inconsistente para o GILLETTE
+TRIMESTRAL**, cujo Realizado/Meta são apurados sobre os 3 meses do
+Trimestre Fixo — um RCA podia ter devolução baixa em 2 dos 3 meses do
+trimestre e ainda assim ser zerado no ranking só por estourar a faixa no
+mês da apuração (ou vice-versa).
+
+**Decisão do usuário**: a devolução do ranking Gillette deve ser a do
+**mesmo Trimestre Fixo** apurado pelo indicador.
+
+**Correção aplicada**:
+
+- **Transformação** (seção "Vendas Trimestre Fixo", bloco novo "5.
+  DEVOLUCAO E FATURAMENTO POR RCA... NO TRIMESTRE FIXO"): dois QVDs
+  novos, `FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO_AAAA_TN.qvd` e
+  `FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO_AAAA_TN.qvd`, agregando a mesma
+  `TMP_VENDAS` do trimestre (já usada para `FATO_VENDAS_TRIMESTRE_FIXO_
+  SECAO`/`DEPARTAMENTO`) só por `Cod RCA` (sem quebra por Seção/
+  Departamento) — mesmo padrão de `FATO_DEVOLUCAO_RCA`/
+  `FATO_FATURAMENTO_RCA` (Mês Atual), só que trimestral.
+- **Modelagem** (bloco `PREMIAÇÃO GILLETTE TRIMESTRAL`, antes de
+  `BASE_GILLETTE_TRI`): novo `MAP_PERC_DEVOL_FAT_RCA_TRI`, calculado a
+  partir dos 2 QVDs acima (`TotalDevolucaoRcaTri / TotalFaturadoRcaTri`),
+  substituindo o antigo `MAP_PERC_DEVOL_FAT_RCA` (que lia
+  `GANHO_FINAL_RCA.PercDevolucaoRcaFaturado`, mês atual) nas 3 fórmulas
+  de `BASE_GILLETTE_TRI` (`PercDevolucaoRcaFaturadoGillette`,
+  `PercAtingimentoFaturadoRank`, `FlagZeradoPorDevolucao`).
+- **O que NÃO mudou**: a Faixa de Repasse dos demais indicadores
+  (mensais, `GANHO_FINAL_RCA` / PARTE 4) continua usando
+  `PercDevolucaoRcaFaturado` do **Mês Atual** — só o ranking Gillette
+  Trimestral passou a usar a janela trimestral. `GANHO_FINAL_RCA`
+  continua no modelo de dados (não foi alterado nem dropado).
+
+**Correção adicional no ranking do Supervisor (mesmo dia, achado pelo
+usuário revisando o script)**: o ranking Gillette Trimestral do
+**Supervisor** tinha o mesmo problema de janela (usava
+`GANHO_FINAL_SUP.PercDevolucaoSupFaturado`, Mês Atual) **e mais um
+segundo problema**: mesmo trocando a janela, a devolução do Supervisor
+precisa ser a soma de **todos os RCAs do time dele** — a campanha
+Gillette Trimestral do Supervisor é o resultado do time inteiro, não
+apenas dos RCAs que individualmente têm o indicador cadastrado em
+`PREM_RCA`. O lado Realizado (`PercAtingimentoFaturadoGilletteSup`,
+vindo de `BASE_SUP_INDICADORES_REALIZADO`) já fazia isso certo, porque é
+calculado direto da `FATO_VENDAS_SECAO_TRIMESTRE_FIXO` para todos os
+RCAs (ver seção 7.2) — só a devolução do ranking ainda dependia de uma
+reagregação que, por si só, já cobria todos os RCAs (via `MAP_RCA_SUP`
+em `GANHO_FINAL_SUP`), mas na janela errada.
+
+**Correção aplicada**: novo `MAP_PERC_DEVOL_FAT_SUP_TRI`, calculado
+agregando `FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO`/
+`FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO` (as mesmas 2 fontes RCA/Trimestre
+Fixo criadas acima) direto por `CodSupervisor` via
+`ApplyMap('MAP_RCA_SUP', ...)` — soma **todos** os RCAs do supervisor,
+independente de cada um ter ou não `GILLETTE TRIMESTRAL` em `PREM_RCA`
+— substituindo `MAP_PERC_DEVOL_FAT_SUP` nas 3 fórmulas de
+`BASE_GILLETTE_TRI_SUP`. Mesmo cuidado de sempre: agregação (`GROUP BY
+CodSupervisor`) feita **antes** do `LEFT JOIN`, porque vários RCAs
+colapsam no mesmo supervisor.
+
+**Ainda não validado no Qlik Sense** (2026-09-15).
+
+## 7.6 Setembro 2026 — Supervisor fictício Gerson (73+74 → 7374): código correto por indicador
+
+**Achado do usuário (2026-09-15, revisando o grupo de ranking Gillette no
+Qlik Sense)**: comparando `data/grupo_rank_sup.png` (aba
+`PREM_RANK_GILLETTE_SUP` da planilha, grupo "ADRIANO/GERSON TOP/WILLIAM"
+com 4 supervisores: 60, 105, 73, 34) com `data/qlik_rank_sup.png` (Qlik
+mostrando só 3: 105, 34, 60) — faltava o Gerson.
+
+**Causa raiz**: a planilha `CAMPANHAS_2026_09.xlsx` usa **códigos
+diferentes** para o supervisor fictício "Gerson" em abas diferentes:
+
+| Aba | Código do Gerson |
+|---|---|
+| `PREM_SUP` (premiação) | `7374` |
+| `SUP_DEVOL` (faixa de repasse mensal) | `7374` |
+| `PREM_RANK_GILLETTE_SUP` (grupo de ranking) | `73` |
+| `SUP_DEVOL_RANK` (faixa máxima do ranking) | `73` |
+
+Confirmado também em `data/METAS_2026-SET.xlsx` (abas `RCA_SEC`/
+`RCA_DEP`, coluna `SV`) que o cadastro trata os RCAs do Gerson com os
+códigos **reais e separados** `73` (TOPCONTAS) e `74` (INTERIOR) — nunca
+`7374` diretamente; `7374` é só uma convenção de relatório usada em
+`PREM_SUP`/`SUP_DEVOL` pra reportar a soma dos dois times como se fosse
+um supervisor só.
+
+**Regra de negócio confirmada pelo usuário**: `GILLETTE TRIMESTRAL`
+apura **só pelo código real 73** (o usuário vai corrigir `PREM_SUP` para
+usar `73` em vez de `7374` nessa linha). **Todos os demais indicadores**
+do Gerson precisam somar o Realizado de `73` **e** `74` juntos, sob o
+código fictício `7374` (como já é `PREM_SUP`/`SUP_DEVOL` hoje).
+
+**Correção aplicada**: nova `MAPPING MAP_SUP_FICTICIO` (73→7374, 74→7374,
+default = o próprio código pra qualquer outro supervisor).
+
+**Escopo corrigido pelo usuário (2026-09-15, depois da primeira versão
+desta correção ter aplicado o mapa a tudo)**: `MAP_SUP_FICTICIO` só se
+aplica aos **indicadores mensais em geral** — bloco 1.1 (Vendas/
+Positivação Mês Atual, Seção e Departamento), 1.2 (Escolha Certa/
+Platinum Point/CatFoco), 1.4 (Metas de Seção/Departamento/Platinum
+Point/Escolha Certa/CatFoco) e a devolução mensal usada na Faixa de
+Repasse (PARTE 3 da Premiação Final do Supervisor). **Ficam de fora**
+(mantêm o código **real** do supervisor, igual já estava antes de
+qualquer correção do Gerson):
+
+- **GILLETTE TRIMESTRAL** — já era a exceção original (fontes TRIMESTRE
+  FIXO no bloco 1.1, e a devolução trimestral da seção 7.5).
+  `META_GILLETTE_TRI_SUP_TEMP` mistura as duas regras **na mesma
+  tabela**: linhas das seções 93/94/96/97/98 (Gillette) usam o código
+  real, as demais seções (Faturamento Seção mensal) usam o fictício.
+- **MIX MÍNIMO** e **LISTING INICIATIVAS--100% CARTEIRA** (bloco 1.3) —
+  usam o código real do supervisor, sem passar pelo mapa.
+
+**Efeito colateral conhecido (cosmético, não financeiro)**: como
+`GANHO_FINAL_SUP` tem grão só `CodSupervisor` (sem quebra por
+indicador), o Gerson pode aparecer como **linhas distintas** nessa
+tabela — `73`/`74` (Gillette, Mix Mínimo, Listing — Ganho de Gillette
+hoje é sempre ~0 porque `PREM_SUP` deixa `GANHO`/`FAIXA` em branco pra
+esse indicador, igual ao RCA) e `7374` (indicadores mensais gerais). Não
+afeta valores pagos, só a granularidade de exibição nessa tabela
+específica — se isso incomodar visualmente no dashboard, vale revisitar.
+
+**Ainda não validado no Qlik Sense** — depende também da correção da
+planilha (mudar `PREM_SUP` de `7374` para `73` na linha `GILLETTE
+TRIMESTRAL` do Gerson) que o usuário ainda vai aplicar.
+
+## 7.7 Setembro 2026 — `FAIXA ESCOLHA CERTA` ausente para o supervisor 39 (Matheus): dado de cadastro, não bug
+
+**Sintoma (achado pelo usuário, 2026-09-15)**: na tabela "REALIZADO
+SUPERVISOR" do Qlik Sense, o indicador `FAIXA ESCOLHA CERTA` aparecia só
+para os supervisores 29, 75 e 76 — faltava o supervisor 39 (Matheus),
+mesmo ele estando cadastrado em `PREM_SUP` (`CAMPANHAS_2026_09.xlsx`)
+com `GANHO=1500`/`FAIXA=1`.
+
+**Investigação**: confirmado que a linha `(CodSupervisor=39, IndicadorSup
+='FAIXA ESCOLHA CERTA')` não tem nenhum `WHERE`/filtro no script que a
+excluiria (diferente do bug do Gillette/CATFOCO das seções 7.2/7.3) — o
+catálogo `TRF_BASE_SUP_INDICADORES` (de `PREM_SUP`) já garante que ela
+existe. Checando `METAS_2026-SET.xlsx` (aba `ESCOLHA_CERTA`, coluna do
+supervisor real, não `META_EC`) confirmou-se que **nenhum RCA do
+supervisor 39 tinha linha nessa aba** — sem Meta cadastrada, `MetaSup`
+ficava 0 e `PercAtingimentoFaturadoSup` nulo, e o objeto do Qlik
+aparentemente suprime linhas com todas as métricas zeradas/nulas.
+
+**Resolução**: o usuário ajustou a aba `ESCOLHA_CERTA` de
+`METAS_2026-SET.xlsx` incluindo os RCAs do supervisor 39. Após a
+recarga, a linha passou a aparecer normalmente (`MetaSup=480`,
+`PercAtingimentoFaturadoSup=9,38%`, junto dos outros 3 supervisores).
+**Confirmado no Qlik Sense em 2026-09-15**: não era bug de script, era
+dado de cadastro faltante na planilha de Metas.
+
 ## 7. Pontos em aberto para continuar o projeto
 
+- **Corrigir a planilha `CAMPANHAS_2026_09.xlsx`**: mudar `COD_SUP` da
+  linha `GILLETTE TRIMESTRAL` do Gerson na aba `PREM_SUP` de `7374` para
+  `73` (ver seção 7.6) — sem essa correção na planilha, o Gerson continua
+  de fora do ranking Gillette Trimestral mesmo com o script já ajustado
+  (a catalogação em `TRF_BASE_SUP_INDICADORES` ainda viria como `7374`,
+  que não bate com `MAP_GRUPO_GILLETTE_SUP`/`MAP_PERC_DEVOL_FAT_SUP_TRI`,
+  ambos chaveados por `73`).
+- **Validar no Qlik Sense a correção da seção 7.6** (código correto do
+  Gerson por indicador — `MAP_SUP_FICTICIO`), depois da correção da
+  planilha acima: conferir que o Gerson aparece no grupo "ADRIANO/GERSON
+  TOP/WILLIAM" do ranking Gillette (4 supervisores) sob o código real
+  (73/74); que os indicadores mensais gerais dele (`PANTENE*`, `HEAD E
+  SHOULDERS`, `DESODORANTE`, `FATURAMENTO TOTAL AM`, Escolha Certa,
+  Platinum Point, CatFoco) somam RCAs 73+74 sob o código fictício
+  `7374`; e que `MIX MINIMO`/`LISTING INICIATIVAS--100% CARTEIRA`
+  continuam com o código real (73/74), **sem** passar pelo
+  `MAP_SUP_FICTICIO`.
+- **Validar no Qlik Sense a correção da seção 7.5** (% devolução do
+  ranking Gillette Trimestral trocado de Mês Atual para Trimestre Fixo,
+  tanto no RCA quanto no Supervisor): confirmar que os 2 QVDs novos
+  (`FATO_DEVOLUCAO_RCA_TRIMESTRE_FIXO_*`/
+  `FATO_FATURAMENTO_RCA_TRIMESTRE_FIXO_*`) são gerados; comparar
+  `FlagZeradoPorDevolucao` (RCA) antes/depois para pelo menos um RCA com
+  devolução alta em só 1 dos 3 meses do trimestre; comparar
+  `FlagZeradoPorDevolucaoSup` (Supervisor) para um supervisor que tenha
+  algum RCA sem `GILLETTE TRIMESTRAL` individual em `PREM_RCA` mas com
+  vendas nas seções do indicador (caso em que a correção da agregação
+  por `MAP_RCA_SUP` deveria mudar o resultado).
+- Historização das 6 tabelas finais (seção 7.4): **STORE dos 6 QVDs
+  `HISTORICO_*.qvd` já validado** (2026-09-15) na primeira recarga. Ainda
+  falta confirmar (1) que uma segunda recarga no mesmo mês/trimestre
+  **substitui** (não duplica) o período atual, e (2) ajustar os objetos
+  do app que hoje usam `CodRca`/`CodSupervisor` sem filtrar por período
+  (`DATA`/`DataSup`/`DataRef`/`DataRefSup`/`TrimestreRef`/
+  `TrimestreRefSup`) — passam a somar todos os períodos acumulados
+  juntos, não só o atual.
 - Confirmar se o valor de R$20 por positivação do **Escolha Certa
   Especial** é calculado em algum lugar (script ou app Qlik) — não
   localizado aqui.
