@@ -573,6 +573,102 @@ que ainda não existe em nenhuma aba de `CAMPANHAS_2026_09.xlsx`
 Always"). **Decisão do usuário (2026-09-14): deixar de fora por
 enquanto** até a fonte de dado ser definida/adicionada na planilha.
 
+## 7.2 Setembro 2026 — Base de Realizado do Supervisor reescrita no grão do Supervisor
+
+**Sintoma (achado pelo usuário, 2026-09-15, comparando `PREM_SUP` de
+`CAMPANHAS_2026_09.xlsx` com a tabela `REALIZADO SUPERVISOR` no Qlik)**:
+o supervisor `29` tem 7 indicadores na planilha (`CATFOCO ALWAYS`,
+`CATFOCO PAMPERS`, `POSITIVAÇÃO PROCTER`, `FAIXA ESCOLHA CERTA`,
+`PLATINUM POINTS`, `GILLETTE TRIMESTRAL`, `FATURAMENTO TOTAL AM`), mas o
+Qlik mostrava 9 linhas para ele — 7 delas erradas (`DESODORANTE`, `HEAD E
+SHOULDERS`, `ORAL B CREME`, `ORAL B ESCOVAS`, `PANTENE KIT`, `PANTENE
+SHAMPOO E CONDICIONADOR`, `PANTENE TRATAMENTO`, todas com `FaixaSup`/
+`GanhoSup` nulos) e 5 dos 7 verdadeiros ausentes.
+
+**Causa raiz (única, com dois sintomas opostos)**: a `PARTE 1` da
+Modelagem construía a base do Supervisor **reagregando
+`BASE_RCA_INDICADORES_REALIZADO` por `CodSupervisor`** — ou seja, o
+Supervisor só enxergava o que os RCAs dele já apuravam:
+
+- **Sobra** — herdava todo indicador que qualquer RCA do time dele apura,
+  mesmo os que não estão no `PREM_SUP` dele. O `LEFT JOIN` com
+  `TRF_PREM_SUP` na `PARTE 2` preserva as linhas da esquerda, então elas
+  sobreviviam com Ganho/Faixa nulos.
+- **Falta** — quando **nenhum RCA do supervisor participa da campanha que
+  ele mesmo precisa bater** (exatamente o caso de `POSITIVAÇÃO PROCTER`,
+  `FAIXA ESCOLHA CERTA` e `PLATINUM POINTS` para o sup 29), não havia
+  nada para reagregar e o indicador simplesmente não existia — mesmo com
+  venda/positivação acontecendo na carteira do time. O bloco `PARTE 1.1`
+  (Setembro/2026) tratava só um recorte disso (`DEPARTAMENTO` +
+  `MESATUAL` + `FATURAMENTO`), e com um `Not Exists(IndicadorSup,
+  Indicador)` **global por nome de indicador**, sem supervisor — se o sup
+  A já tivesse `X` vindo dos RCAs, o sup B que tem `X` como exclusivo
+  ficava sem Realizado.
+
+**Correção estrutural aplicada (Modelagem, `PARTE 1` inteira reescrita;
+`PARTE 1.1` eliminada e absorvida)**: a base do Supervisor agora parte do
+**catálogo dele** (`TRF_BASE_SUP_INDICADORES`, gerado da aba `PREM_SUP`)
+e busca Realizado/Meta **direto nas fontes de fato**, agregando de RCA
+para Supervisor. É a mesma montagem vertical do `TRF_BASE_RCA` (chaves
+textuais compostas + cadeia de `LEFT JOIN`s + `Alt()` na unificação), só
+que com `CodSupervisor` no lugar de `CodRca`:
+
+| Bloco | Conteúdo | Chave |
+|---|---|---|
+| `TRF_BASE_SUP` | catálogo `PREM_SUP` × `INDICADORES` | — |
+| 1.1 `REALIZADO_SUP` | 6 fontes de venda/positivação (Seção e Departamento, Trimestre Fixo e Mês Atual) | `_RealizadoSup` |
+| 1.2 `REALIZADO_KPI_SUP` | Escolha Certa + Platinum Points | `_RealizadoKpiSup` |
+| 1.3 Mix Mínimo / Listing | Realizado e Meta (mesma fonte, ligada 2×) | `_RealizadoMixSup`/`_MetaMixSup`, `_RealizadoListingSup`/`_MetaListingSup` |
+| 1.4 Metas | Seção, Gillette Trimestral (×3 nas seções 93/94/96/97/98), Departamento Fat/Pos, Platinum Point, Escolha Certa | `_MetaSup`, `_MetaDepSup`, `_MetaDepPosSup`, `_MetaPPSup`, `_MetaECSup` |
+| 1.5 Unificação | `Alt()` → `MetaSup`/`ValorPedidoLiquidoSup`/`ValorFaturadoLiquidoSup` + `GROUP BY` final | — |
+
+Pontos de projeto que valem lembrar ao mexer nesse bloco:
+
+- **Toda fonte é agregada (`GROUP BY` pela chave de supervisor) ANTES do
+  `LEFT JOIN`** — diferença crítica em relação ao `TRF_BASE_RCA`: vários
+  RCAs colapsam no mesmo supervisor, e `LEFT JOIN` não soma linhas
+  repetidas, só as replica. Todos os blocos usam o padrão de duas etapas
+  (`<TABELA>_TEMP` com a chave → `<TABELA>` com `GROUP BY <chave>`), que
+  também evita depender de `GROUP BY` sobre expressão.
+- **De onde vem o `CodSupervisor` em cada fonte**: fatos de
+  venda/positivação, Mix Mínimo, Listing, Escolha Certa e Platinum Point
+  só têm `Cod RCA` → `ApplyMap('MAP_RCA_SUP', ...)`; as metas
+  (`RCA_SEC`/`RCA_DEP`/`PLATINUM_POINT`/`ESCOLHA_CERTA`) já trazem a
+  coluna de supervisor da própria planilha (`SV`/`G`/`F14`) e usam o
+  campo direto, sem `ApplyMap`.
+- **Indicadores do `PREM_SUP` sem fonte de dado** (hoje `CATFOCO ALWAYS`
+  e `CATFOCO PAMPERS`, ver 7.1) passam a **aparecer com Meta/Realizado
+  nulos**, em vez de sumir — é o que o supervisor tem que bater, só falta
+  a fonte.
+- **Nomes de campo de saída não mudaram** (`DataSup`, `CodSupervisor`,
+  `IndicadorSup`, `ClasseIndicadorSup`, `MetaSup`,
+  `ValorPedidoLiquidoSup`, `ValorFaturadoLiquidoSup`,
+  `PercAtingimentoPedidoSup`, `PercAtingimentoFaturadoSup`), então as
+  PARTES 2 a 5 (Ganho, % Devolução, Faixa de Repasse, Ganho Final) e o
+  Ranking Gillette de Supervisor seguem sem alteração.
+- A regra de "único campo em comum com `BASE_RCA_INDICADORES_REALIZADO` é
+  `CodSupervisor`" continua valendo — por isso todo campo tem sufixo
+  `Sup` e `NomeSupervisor`/`Supervisor` não são trazidos.
+
+**Bug de recarga corrigido em seguida (mesmo dia, achado pelo usuário
+rodando no Qlik Sense)**: `TRF_BASE_SUP` (bloco `1.` acima) lia o QVD do
+catálogo com `FROM [...TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual).QVD]`
+e falhava com `Cannot open file` — o nome real do arquivo em disco é
+`..._2026_09.QVD`, mas o erro mostrava `..._2026_set.QVD`. Causa: dentro
+da aba Modelagem, `vMesAtual` é redefinido (poucas linhas antes, junto de
+`vDataCarg`/`vTrimestre`) como `Month(Today())` — um valor dual que, ao
+ser interpolado com `$(...)`, usa a representação textual do mês (`set`,
+abreviação de setembro) em vez do número (na Transformação, onde o QVD é
+gravado, `vMesAtual` é `Num(Month(Today()),'00')` = `"09"`, daí a
+divergência). **Correção**: trocado para `$(vDataCarg)`
+(`Date(MonthStart(Today()),'YYYY_MM')` = `"2026_09"`), a mesma variável
+que `TRF_BASE_RCA_INDICADORES` já usa para ler seu catálogo nesta mesma
+aba — nunca usar `$(vAno)_$(vMesAtual)` na Modelagem, só na
+Transformação.
+
+**Validado no Qlik Sense em 2026-09-15 (confirmado pelo usuário): recarga
+concluída sem erros, base de Supervisor funcionando.**
+
 ## 7. Pontos em aberto para continuar o projeto
 
 - Confirmar se o valor de R$20 por positivação do **Escolha Certa
@@ -591,6 +687,16 @@ enquanto** até a fonte de dado ser definida/adicionada na planilha.
   e `PREMIACAO_GILLETTE_TRI` só por `CodRca`, sem loop entre as 3.
 - **CATFOCO ALWAYS / CATFOCO PAMPERS** (indicadores de Supervisor,
   Setembro 2026): fonte de dado ainda não definida, ver seção 7.1.
+- Reescrita da seção 7.2 **validada no Qlik Sense em 2026-09-15**
+  (recarga concluída sem erros, base de Supervisor funcionando). Ainda
+  vale, numa próxima conferência: (a) checar se as metas de Supervisor
+  batem com a soma das metas dos RCAs do time (nenhum valor multiplicado
+  — sinal de `LEFT JOIN` sem agregação prévia); (b) confirmar que nenhum
+  supervisor perdeu indicador que ele deveria apurar, além do sup 29 já
+  conferido.
+- A base do Supervisor não cobre `PeriodoIndicador='TRIMESTRE MOVEL'`
+  (nem a do RCA cobre) — se entrar um indicador de Supervisor nesse
+  período, falta mais um `CONCATENATE` no bloco 1.1.
 - Não foi possível confirmar os QVDs de **Metas de Setembro**
   (`METAS_2026-SET.xlsx` → `TRF_METAS_MES`/`TRF_METAS_DEPARTAMENTO_MES`)
   — só `CAMPANHAS_2026_09.xlsx` foi conferida em `data/`. Sem a planilha

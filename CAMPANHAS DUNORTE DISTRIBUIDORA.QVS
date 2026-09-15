@@ -2976,10 +2976,49 @@ DROP TABLE BASE_GILLETTE_TRI;
 
 /*//////////////////////////////////////////////////////////////////////////
 
-    PARTE 1 - AGREGACAO DO REALIZADO POR SUPERVISOR/INDICADOR/DATA
-    Soma o realizado de todos os RCAs de cada supervisor e recalcula o %
-    de atingimento em cima dos totais agregados (nao e a media dos % dos
-    RCAs - e o total do time dividido pela meta total do time).
+    PARTE 1 - REALIZADO E META NO GRAO DO SUPERVISOR
+    -----------------------------------------------
+    REESCRITO (2026-09-15). Antes, esta parte reagregava
+    BASE_RCA_INDICADORES_REALIZADO por CodSupervisor - ou seja, o
+    Supervisor so "enxergava" o que os RCAs dele ja apuravam. Isso tinha
+    dois defeitos graves:
+
+      (a) SOBRA - o supervisor herdava TODO indicador que qualquer RCA do
+          time dele apura, mesmo os que nao estao no PREM_SUP dele (ex:
+          sup 29 aparecia com DESODORANTE / HEAD E SHOULDERS / ORAL B* /
+          PANTENE*, que nao existem na planilha dele); o LEFT JOIN da
+          PARTE 2 preservava essas linhas com Ganho/Faixa nulos.
+
+      (b) FALTA - se NENHUM RCA do supervisor participa da campanha que
+          ELE precisa bater (caso do sup 29 com POSITIVACAO PROCTER /
+          FAIXA ESCOLHA CERTA / PLATINUM POINTS), nao existia nada pra
+          reagregar e o indicador simplesmente nao aparecia - mesmo com
+          venda/positivacao acontecendo na carteira do time.
+
+    A correcao e estrutural: a base do Supervisor agora parte do CATALOGO
+    DELE (TRF_BASE_SUP_INDICADORES, gerado da aba PREM_SUP) e busca
+    Realizado/Meta DIRETO nas fontes de fato, agregando de RCA para
+    Supervisor. Mesma montagem vertical do TRF_BASE_RCA (chaves textuais
+    compostas + LEFT JOINs + Alt() na unificacao), so que com
+    CodSupervisor no lugar de CodRca.
+
+    DIFERENCA CRITICA EM RELACAO AO TRF_BASE_RCA: varios RCAs colapsam no
+    MESMO supervisor, entao TODA fonte precisa ser agregada (GROUP BY
+    pela chave de supervisor) ANTES do LEFT JOIN - um LEFT JOIN nao soma
+    linhas repetidas, so as replica (mesmo cuidado que ja existia no
+    bloco de Departamento exclusivo da versao anterior).
+
+    De onde vem o CodSupervisor em cada fonte:
+      - Fatos de venda/positivacao, Mix Minimo, Listing, Escolha Certa e
+        Platinum Point: so tem "Cod RCA" -> ApplyMap('MAP_RCA_SUP', ...).
+      - Metas (RCA_SEC/RCA_DEP/PLATINUM_POINT/ESCOLHA_CERTA): a propria
+        planilha ja traz a coluna de supervisor (SV / G / F14), entao
+        usamos o campo CodSupervisor do QVD, sem ApplyMap.
+
+    Indicadores do PREM_SUP sem fonte de dado (hoje CATFOCO ALWAYS e
+    CATFOCO PAMPERS, ver secao 7.1 da documentacao) continuam aparecendo,
+    com Meta/Realizado nulos - de proposito: e o que o supervisor tem que
+    bater, so falta a fonte.
 
 //////////////////////////////////////////////////////////////////////////*/
 // NomeSupervisor/Supervisor NAO sao trazidos aqui de proposito - sao
@@ -2990,120 +3029,434 @@ DROP TABLE BASE_GILLETTE_TRI;
 // O nome do supervisor continua disponivel via associacao por
 // CodSupervisor com BASE_RCA_INDICADORES_REALIZADO (ou por
 // Applymap('MAP_SUP', CodSupervisor,...) se precisar como expressao).
-BASE_SUP_INDICADORES_REALIZADO:
-NoConcatenate
+//
+// Chaves com o Indicador embutido (_MetaPPSup/_MetaECSup/_RealizadoKpiSup/
+// _RealizadoMixSup/_MetaMixSup/_RealizadoListingSup/_MetaListingSup):
+// mesmo motivo do RCA - Platinum Point, Escolha Certa, Mix Minimo e
+// Listing compartilham Codigo='3' + TipoIndicador='DEPARTAMENTO', entao
+// sem o Indicador na formula eles teriam chave identica e se
+// confundiriam no join.
+//
+// FROM usa $(vDataCarg) ('YYYY_MM', ex: 2026_09) - NAO $(vAno)_$(vMesAtual)
+// aqui na Modelagem: nesta aba vMesAtual e redefinido (poucas linhas acima)
+// como Month(Today()), um dual que interpola no texto como abreviacao do
+// mes ('set'), nao o numero padded ('09') usado na Transformacao ao
+// gerar este QVD - usar a variavel errada aqui gera "Cannot open file"
+// (mesmo padrao ja usado por TRF_BASE_RCA_INDICADORES logo acima).
+TRF_BASE_SUP:
 LOAD
-    DATA           AS DataSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _MetaSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _MetaDepSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _MetaDepPosSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaPPSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaECSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _RealizadoMixSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaMixSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _RealizadoListingSup,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador&'|'&Indicador AS _MetaListingSup,
+
+    // Escolha Certa e Platinum Point: o Realizado vem de QVDs proprios,
+    // chaveados so por DATA + RCA + Indicador (sem Codigo/Tipo/Classe) -
+    // por isso esta chave tem formato diferente das demais.
+    Date(MonthStart(DATA)) & '|' & Text(Trim(CodSupervisor)) & '|' & Indicador AS _RealizadoKpiSup,
+
+    Date(MonthStart(DATA)) AS DataSup,
     CodSupervisor,
-    Indicador      AS IndicadorSup,
-    ClasseIndicador AS ClasseIndicadorSup,
+    Indicador       AS IndicadorSup,
+    ClasseIndicador AS ClasseIndicadorSup
 
-    Sum(Meta)                 AS MetaSup,
-    Sum(ValorPedidoLiquido)   AS ValorPedidoLiquidoSup,
-    Sum(ValorFaturadoLiquido) AS ValorFaturadoLiquidoSup,
-
-    If(Sum(Meta) > 0, Sum(ValorPedidoLiquido)   / Sum(Meta)) AS PercAtingimentoPedidoSup,
-    If(Sum(Meta) > 0, Sum(ValorFaturadoLiquido) / Sum(Meta)) AS PercAtingimentoFaturadoSup
-
-RESIDENT BASE_RCA_INDICADORES_REALIZADO
-GROUP BY
-    DATA,
-    CodSupervisor,
-    Indicador,
-    ClasseIndicador;
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_BASE_SUP_INDICADORES_$(vDataCarg).QVD]
+(qvd);
 
 
 /*//////////////////////////////////////////////////////////////////////////
 
-    PARTE 1.1 - REALIZADO DOS INDICADORES EXCLUSIVOS DE SUPERVISOR
-    Indicadores que so existem na aba PREM_SUP (nunca em PREM_RCA) - ex:
-    FATURAMENTO TOTAL RR, FATURAMENTO TOTAL AM, RENTABILIDADE 9% (Setembro
-    2026) - nunca ganham uma linha em TRF_BASE_RCA_INDICADORES (catalogo
-    vem so de PREM_RCA), entao a PARTE 1 acima (que reagrega
-    BASE_RCA_INDICADORES_REALIZADO por CodSupervisor) nunca tem nada pra
-    somar para eles. Aqui usamos o catalogo proprio TRF_BASE_SUP_INDICADORES
-    (aba PREM_SUP, ver Transformacao) e reagregamos o Realizado/Meta - ja
-    calculados a nivel de RCA em FATO_VENDAS_DEPARTAMENTO_MES e
-    TRF_METAS_DEPARTAMENTO_MES - direto ate o Supervisor.
-
-    Not Exists(IndicadorSup, Indicador) detecta dinamicamente quais
-    indicadores do catalogo de Supervisor AINDA NAO tem nenhuma linha em
-    BASE_SUP_INDICADORES_REALIZADO (ou seja, nao vieram de nenhum RCA) -
-    evita duplicar/dobrar o Realizado de indicadores que ja sao cobertos
-    pela PARTE 1, e continua funcionando se um indicador exclusivo de hoje
-    passar a existir tambem em PREM_RCA num mes futuro.
-
-    Por enquanto so cobre TipoIndicador=DEPARTAMENTO + PeriodoIndicador=
-    MESATUAL, que e o unico caso que aparece na planilha de Setembro/2026
-    para indicadores exclusivos de Supervisor - linhas de outro Tipo/
-    Periodo ficam sem Realizado (Meta/Valor nulos) ate este bloco ganhar
-    mais uma fonte, mesmo padrao do CONCATENATE em REALIZADO_SECAO (RCA).
+    1.1 REALIZADO DE VENDAS E POSITIVACAO (SECAO + DEPARTAMENTO)
+        Mesmas 6 fontes do REALIZADO_SECAO do RCA, so que a chave usa
+        ApplyMap('MAP_RCA_SUP', "Cod RCA") - o RCA nao precisa participar
+        da campanha para a venda dele contar pro supervisor, que e
+        justamente o ponto desta reescrita.
 
 //////////////////////////////////////////////////////////////////////////*/
-TRF_BASE_SUP_EXCLUSIVO:
+REALIZADO_SUP_TEMP:
 LOAD
-    Date(MonthStart(DATA)) AS DataSup,
-    CodSupervisor,
-    Indicador               AS IndicadorSup,
-    ClasseIndicador          AS ClasseIndicadorSup,
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim(Codigo)) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _RealizadoSupExcl
-FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual).QVD]
-(qvd)
-WHERE TipoIndicador = 'DEPARTAMENTO' AND PeriodoIndicador = 'MESATUAL' AND ClasseIndicador = 'FATURAMENTO'
-  AND Not Exists(IndicadorSup, Indicador);
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    ValorPedidoLiquido,
+    ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_SECAO_TRIMESTRE_FIXO_$(vAno)_T$(vTrimestre).qvd]
+(qvd);
 
-// Realizado do RCA (FATO_VENDAS_DEPARTAMENTO_MES) somado por Supervisor -
-// precisa agregar (GROUP BY) ANTES do LEFT JOIN, porque varios RCAs do
-// mesmo supervisor produzem a mesma chave _RealizadoSupExcl e um LEFT
-// JOIN nao soma linhas repetidas, so as replica.
-REALIZADO_DEPARTAMENTO_SUP_TEMP:
+CONCATENATE (REALIZADO_SUP_TEMP)
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSupExcl,
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    ValorPedidoLiquido,
+    ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_SECAO_MES_$(vDataCarg).qvd]
+(qvd);
+
+CONCATENATE (REALIZADO_SUP_TEMP)
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    ValorPedidoLiquido,
+    ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_DEPARTAMENTO_TRIMESTRE_FIXO_$(vAno)_T$(vTrimestre).qvd]
+(qvd);
+
+CONCATENATE (REALIZADO_SUP_TEMP)
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
     ValorPedidoLiquido,
     ValorFaturadoLiquido
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_VENDAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
 (qvd);
 
-REALIZADO_DEPARTAMENTO_SUP:
+// Positivacao: a soma por supervisor e a soma das positivacoes dos RCAs
+// dele (mesma premissa que a versao anterior ja usava ao reagregar o
+// RCA). So conta 2x se o mesmo cliente for positivado por 2 RCAs do
+// mesmo supervisor - hoje nao acontece, porque o cliente tem RCA
+// principal unico (MAP_CLIENTE_PRINC).
+CONCATENATE (REALIZADO_SUP_TEMP)
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    QtdClientesPositivadosPedido   AS ValorPedidoLiquido,
+    QtdClientesPositivadosFaturado AS ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_POSITIVACAO_SECAO_MES_$(vDataCarg).qvd]
+(qvd);
+
+CONCATENATE (REALIZADO_SUP_TEMP)
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&ClasseIndicador AS _RealizadoSup,
+    QtdClientesPositivadosPedido   AS ValorPedidoLiquido,
+    QtdClientesPositivadosFaturado AS ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_POSITIVACAO_DEPARTAMENTO_MES_$(vDataCarg).qvd]
+(qvd);
+
+// Agregacao OBRIGATORIA antes do join (varios RCAs -> um supervisor).
+REALIZADO_SUP:
 NoConcatenate
 LOAD
-    _RealizadoSupExcl,
-    Sum(ValorPedidoLiquido)   AS ValorPedidoLiquidoSup,
-    Sum(ValorFaturadoLiquido) AS ValorFaturadoLiquidoSup
-RESIDENT REALIZADO_DEPARTAMENTO_SUP_TEMP
-GROUP BY _RealizadoSupExcl;
+    _RealizadoSup,
+    Sum(ValorPedidoLiquido)   AS ValorPedidoSupSecDep,
+    Sum(ValorFaturadoLiquido) AS ValorFaturadoSupSecDep
+RESIDENT REALIZADO_SUP_TEMP
+GROUP BY _RealizadoSup;
 
-DROP TABLE REALIZADO_DEPARTAMENTO_SUP_TEMP;
+DROP TABLE REALIZADO_SUP_TEMP;
 
-LEFT JOIN (TRF_BASE_SUP_EXCLUSIVO)
-LOAD * RESIDENT REALIZADO_DEPARTAMENTO_SUP;
-DROP TABLE REALIZADO_DEPARTAMENTO_SUP;
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT REALIZADO_SUP;
+DROP TABLE REALIZADO_SUP;
 
-// Meta ja vem com CodSupervisor proprio (coluna SV da aba RCA_DEP), sem
-// precisar de ApplyMap('MAP_RCA_SUP', ...) - mesma fonte usada pelo Meta
-// de Departamento do RCA (META_DEPARTAMENTO_FAT, PARTE 5 acima).
-META_DEPARTAMENTO_SUP_TEMP:
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    1.2 REALIZADO ESCOLHA CERTA + PLATINUM POINTS (Classe KPI)
+        No RCA esses dois entram so na agregacao final
+        (BASE_RCA_INDICADORES_REALIZADO), chaveados por DATA+RCA+Indicador.
+        Aqui entram na propria montagem, pela chave _RealizadoKpiSup.
+        Como os dois QVDs trazem nomes de Indicador diferentes ('FAIXA
+        ESCOLHA CERTA' e 'PLATINUM POINTS'), podem compartilhar a mesma
+        chave sem risco de colisao - por isso um unico CONCATENATE.
+
+//////////////////////////////////////////////////////////////////////////*/
+REALIZADO_KPI_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _RealizadoSupExcl,
+    Date(MonthStart(DATA)) & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Indicador AS _RealizadoKpiSup,
+    Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
+    Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_ESCOLHA_CERTA_$(vDataCarg).QVD]
+(qvd);
+
+CONCATENATE (REALIZADO_KPI_SUP_TEMP)
+LOAD
+    Date(MonthStart(DATA)) & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', "Cod RCA", '#ND'))) & '|' & Indicador AS _RealizadoKpiSup,
+    Num(ValorPedidoLiquido)   AS ValorPedidoLiquido,
+    Num(ValorFaturadoLiquido) AS ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_PLATINUM_POINT_$(vDataCarg).QVD]
+(qvd);
+
+REALIZADO_KPI_SUP:
+NoConcatenate
+LOAD
+    _RealizadoKpiSup,
+    Sum(ValorPedidoLiquido)   AS ValorPedidoSupKpi,
+    Sum(ValorFaturadoLiquido) AS ValorFaturadoSupKpi
+RESIDENT REALIZADO_KPI_SUP_TEMP
+GROUP BY _RealizadoKpiSup;
+
+DROP TABLE REALIZADO_KPI_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT REALIZADO_KPI_SUP;
+DROP TABLE REALIZADO_KPI_SUP;
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    1.3 REALIZADO + META DE MIX MINIMO E LISTING INICIATIVAS
+        Mesma fonte para Realizado e Meta (igual ao RCA) - cada uma
+        ligada duas vezes, com chave e campo de valor proprios.
+
+//////////////////////////////////////////////////////////////////////////*/
+REALIZADO_MIX_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'MIX MINIMO' AS _RealizadoMixSup,
+    ValorPedidoLiquido,
+    ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_MIXMINIMO_RCA_MES_$(vDataCarg).qvd]
+(qvd);
+
+REALIZADO_MIX_SUP:
+NoConcatenate
+LOAD
+    _RealizadoMixSup,
+    Sum(ValorPedidoLiquido) AS ValorPedidoSupMix,
+    Sum(ValorFaturadoLiquido) AS ValorFaturadoSupMix
+RESIDENT REALIZADO_MIX_SUP_TEMP
+GROUP BY _RealizadoMixSup;
+
+DROP TABLE REALIZADO_MIX_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT REALIZADO_MIX_SUP;
+DROP TABLE REALIZADO_MIX_SUP;
+
+// Meta do Mix ligada por chave propria (_MetaMixSup) - mesmo padrao do
+// RCA, que liga a mesma fonte duas vezes.
+META_MIX_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'MIX MINIMO' AS _MetaMixSup,
+    Meta
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_MIXMINIMO_RCA_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_MIX_SUP:
+NoConcatenate
+LOAD
+    _MetaMixSup,
+    Sum(Meta) AS MetaMixSup
+RESIDENT META_MIX_SUP_TEMP
+GROUP BY _MetaMixSup;
+
+DROP TABLE META_MIX_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_MIX_SUP;
+DROP TABLE META_MIX_SUP;
+
+REALIZADO_LISTING_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'LISTING INICIATIVAS--100% CARTEIRA' AS _RealizadoListingSup,
+    ValorPedidoLiquido,
+    ValorFaturadoLiquido
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_LISTING_RCA_MES_$(vDataCarg).qvd]
+(qvd);
+
+REALIZADO_LISTING_SUP:
+NoConcatenate
+LOAD
+    _RealizadoListingSup,
+    Sum(ValorPedidoLiquido) AS ValorPedidoSupListing,
+    Sum(ValorFaturadoLiquido) AS ValorFaturadoSupListing
+RESIDENT REALIZADO_LISTING_SUP_TEMP
+GROUP BY _RealizadoListingSup;
+
+DROP TABLE REALIZADO_LISTING_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT REALIZADO_LISTING_SUP;
+DROP TABLE REALIZADO_LISTING_SUP;
+
+META_LISTING_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'LISTING INICIATIVAS--100% CARTEIRA' AS _MetaListingSup,
+    Meta
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_LISTING_RCA_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_LISTING_SUP:
+NoConcatenate
+LOAD
+    _MetaListingSup,
+    Sum(Meta) AS MetaListingSup
+RESIDENT META_LISTING_SUP_TEMP
+GROUP BY _MetaListingSup;
+
+DROP TABLE META_LISTING_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_LISTING_SUP;
+DROP TABLE META_LISTING_SUP;
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    1.4 METAS (SECAO, GILLETTE TRIMESTRAL, DEPARTAMENTO FAT/POS,
+        PLATINUM POINT, ESCOLHA CERTA)
+        Todas as fontes de meta ja trazem a coluna de supervisor da
+        propria planilha (SV / G / F14), entao aqui o CodSupervisor vem
+        do QVD, sem ApplyMap. Todas agregadas (Sum) por chave antes do
+        join - a meta do supervisor e a soma das metas dos RCAs dele.
+
+//////////////////////////////////////////////////////////////////////////*/
+META_SECAO_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Secao")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaSup,
+    Meta
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_SECAO_SUP:
+NoConcatenate
+LOAD
+    _MetaSup,
+    Sum(Meta) AS MetaSecaoFatSup
+RESIDENT META_SECAO_SUP_TEMP
+GROUP BY _MetaSup;
+
+DROP TABLE META_SECAO_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_SECAO_SUP;
+DROP TABLE META_SECAO_SUP;
+
+// Gillette Trimestral: mesma regra do RCA - as secoes 93/94/96/97/98
+// viram periodo TRIMESTRE FIXO e a meta mensal e multiplicada por 3.
+META_GILLETTE_TRI_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Secao")) & '|' &
+    IF(Match("Cod Secao",93,94,96,97,98),'TRIMESTRE FIXO',PeriodoIndicador)
+    &'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaSup,
+    IF(Match("Cod Secao",93,94,96,97,98),Meta*3,Meta) AS MetaGil
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_GILLETTE_TRI_SUP:
+NoConcatenate
+LOAD
+    _MetaSup,
+    Sum(MetaGil) AS MetaSecaoFatGilletteTriSup
+RESIDENT META_GILLETTE_TRI_SUP_TEMP
+GROUP BY _MetaSup;
+
+DROP TABLE META_GILLETTE_TRI_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_GILLETTE_TRI_SUP;
+DROP TABLE META_GILLETTE_TRI_SUP;
+
+META_DEP_FAT_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'FATURAMENTO' AS _MetaDepSup,
     MetaFat
 FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
 (qvd);
 
-META_DEPARTAMENTO_SUP:
+META_DEP_FAT_SUP:
 NoConcatenate
 LOAD
-    _RealizadoSupExcl,
-    Sum(MetaFat) AS MetaSup
-RESIDENT META_DEPARTAMENTO_SUP_TEMP
-GROUP BY _RealizadoSupExcl;
+    _MetaDepSup,
+    Sum(MetaFat) AS MetaDepFatSup
+RESIDENT META_DEP_FAT_SUP_TEMP
+GROUP BY _MetaDepSup;
 
-DROP TABLE META_DEPARTAMENTO_SUP_TEMP;
+DROP TABLE META_DEP_FAT_SUP_TEMP;
 
-LEFT JOIN (TRF_BASE_SUP_EXCLUSIVO)
-LOAD * RESIDENT META_DEPARTAMENTO_SUP;
-DROP TABLE META_DEPARTAMENTO_SUP;
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_DEP_FAT_SUP;
+DROP TABLE META_DEP_FAT_SUP;
 
-BASE_SUP_INDICADORES_REALIZADO_EXCLUSIVO:
+META_DEP_POS_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & Text(Trim("Cod Departamento")) & '|' & PeriodoIndicador&'|'&TipoIndicador&'|'&'POSITIVACAO' AS _MetaDepPosSup,
+    MetaPos
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_DEP_POS_SUP:
+NoConcatenate
+LOAD
+    _MetaDepPosSup,
+    Sum(MetaPos) AS MetaDepPosSup
+RESIDENT META_DEP_POS_SUP_TEMP
+GROUP BY _MetaDepPosSup;
+
+DROP TABLE META_DEP_POS_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_DEP_POS_SUP;
+DROP TABLE META_DEP_POS_SUP;
+
+META_PP_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & 'PLATINUM POINTS' AS _MetaPPSup,
+    MetaPlatinumPoint
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_PLATINUM_POINT_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_PP_SUP:
+NoConcatenate
+LOAD
+    _MetaPPSup,
+    Sum(MetaPlatinumPoint) AS MetaPlatinumPointSup
+RESIDENT META_PP_SUP_TEMP
+GROUP BY _MetaPPSup;
+
+DROP TABLE META_PP_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_PP_SUP;
+DROP TABLE META_PP_SUP;
+
+META_EC_SUP_TEMP:
+LOAD
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'KPI' & '|' & 'FAIXA ESCOLHA CERTA' AS _MetaECSup,
+    MetaEscolhaCerta
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/TRF_METAS_ESCOLHA_CERTA_MES_$(vDataCarg).qvd]
+(qvd);
+
+META_EC_SUP:
+NoConcatenate
+LOAD
+    _MetaECSup,
+    Sum(MetaEscolhaCerta) AS MetaEscolhaCertaSup
+RESIDENT META_EC_SUP_TEMP
+GROUP BY _MetaECSup;
+
+DROP TABLE META_EC_SUP_TEMP;
+
+LEFT JOIN (TRF_BASE_SUP)
+LOAD * RESIDENT META_EC_SUP;
+DROP TABLE META_EC_SUP;
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    1.5 UNIFICACAO - UM UNICO MetaSup / ValorPedidoLiquidoSup /
+        ValorFaturadoLiquidoSup
+        Mesma logica do Alt() do TRF_BASE_RCA: cada linha so pode ter
+        batido em UMA das fontes (indicadores mutuamente exclusivos por
+        Classe/Tipo/Indicador), entao Alt() pega o primeiro nao-nulo.
+        O GROUP BY final protege contra linhas duplicadas vindas do
+        catalogo (mesmo grao da BASE_RCA_INDICADORES_REALIZADO).
+
+//////////////////////////////////////////////////////////////////////////*/
+TRF_BASE_SUP_UNIFICADO:
+NoConcatenate
+LOAD
+    DataSup,
+    CodSupervisor,
+    IndicadorSup,
+    ClasseIndicadorSup,
+    Alt(MetaSecaoFatSup, MetaDepFatSup, MetaDepPosSup, MetaPlatinumPointSup, MetaEscolhaCertaSup, MetaSecaoFatGilletteTriSup, MetaMixSup, MetaListingSup) AS MetaSupOrigem,
+    Alt(ValorPedidoSupSecDep,   ValorPedidoSupKpi,   ValorPedidoSupMix,   ValorPedidoSupListing)   AS ValorPedidoSupOrigem,
+    Alt(ValorFaturadoSupSecDep, ValorFaturadoSupKpi, ValorFaturadoSupMix, ValorFaturadoSupListing) AS ValorFaturadoSupOrigem
+RESIDENT TRF_BASE_SUP;
+
+DROP TABLE TRF_BASE_SUP;
+
+BASE_SUP_INDICADORES_REALIZADO:
 NoConcatenate
 LOAD
     DataSup,
@@ -3111,21 +3464,23 @@ LOAD
     IndicadorSup,
     ClasseIndicadorSup,
 
-    Alt(MetaSup, 0)                 AS MetaSup,
-    Alt(ValorPedidoLiquidoSup, 0)   AS ValorPedidoLiquidoSup,
-    Alt(ValorFaturadoLiquidoSup, 0) AS ValorFaturadoLiquidoSup,
+    Sum(MetaSupOrigem)          AS MetaSup,
+    Sum(ValorPedidoSupOrigem)   AS ValorPedidoLiquidoSup,
+    Sum(ValorFaturadoSupOrigem) AS ValorFaturadoLiquidoSup,
 
-    If(Alt(MetaSup, 0) > 0, Alt(ValorPedidoLiquidoSup, 0)   / MetaSup) AS PercAtingimentoPedidoSup,
-    If(Alt(MetaSup, 0) > 0, Alt(ValorFaturadoLiquidoSup, 0) / MetaSup) AS PercAtingimentoFaturadoSup
+    // Null (e nao 0%) quando nao ha meta cadastrada - mesma convencao do
+    // RCA: "sem meta" e diferente de "meta nao atingida".
+    If(Sum(MetaSupOrigem) > 0, Sum(ValorPedidoSupOrigem)   / Sum(MetaSupOrigem)) AS PercAtingimentoPedidoSup,
+    If(Sum(MetaSupOrigem) > 0, Sum(ValorFaturadoSupOrigem) / Sum(MetaSupOrigem)) AS PercAtingimentoFaturadoSup
 
-RESIDENT TRF_BASE_SUP_EXCLUSIVO;
+RESIDENT TRF_BASE_SUP_UNIFICADO
+GROUP BY
+    DataSup,
+    CodSupervisor,
+    IndicadorSup,
+    ClasseIndicadorSup;
 
-DROP TABLE TRF_BASE_SUP_EXCLUSIVO;
-
-CONCATENATE (BASE_SUP_INDICADORES_REALIZADO)
-LOAD * RESIDENT BASE_SUP_INDICADORES_REALIZADO_EXCLUSIVO;
-
-DROP TABLE BASE_SUP_INDICADORES_REALIZADO_EXCLUSIVO;
+DROP TABLE TRF_BASE_SUP_UNIFICADO;
 
 
 /*//////////////////////////////////////////////////////////////////////////
