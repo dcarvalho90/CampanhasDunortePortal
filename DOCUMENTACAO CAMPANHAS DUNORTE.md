@@ -967,8 +967,176 @@ recarga, a linha passou a aparecer normalmente (`MetaSup=480`,
 **Confirmado no Qlik Sense em 2026-09-15**: não era bug de script, era
 dado de cadastro faltante na planilha de Metas.
 
+## 7.8 Setembro 2026 — Listing Iniciativas não aparecia para o supervisor 60: rollup RCA→Sup trocado para usar `COD_SUP` da própria `MIX_MIN`
+
+**Sintoma (achado pelo usuário, 2026-09-23)**: na tabela "REALIZADO
+SUPERVISOR" do Qlik Sense, o indicador `LISTING INICIATIVAS--100%
+CARTEIRA` não aparecia para o supervisor 60, mesmo ele estando
+cadastrado em `PREM_SUP` (`CAMPANHAS_2026_09.xlsx`, `GANHO=700`/
+`FAIXA=1`) e mesmo o `MIX MINIMO` (mesmo padrão de indicador exclusivo
+de supervisor) aparecendo normalmente pra esse mesmo supervisor.
+
+**Investigação**: catálogo (`TRF_BASE_SUP_INDICADORES`, de `PREM_SUP`) e
+`INDICADORES` batiam certinho (`CODIGO=3, TIPO=DEPARTAMENTO,
+CLASSE=MANUAL, PERIODO=MESATUAL`, texto do `Indicador` idêntico) — não
+era problema de catálogo nem de nome divergente. `PREM_RCA` **não tem**
+`LISTING INICIATIVAS--100% CARTEIRA` nem `MIX MINIMO` — confirmando que
+os dois são indicadores exclusivos de supervisor (igual ao padrão de
+CATFOCO ALWAYS/PAMPERS antes de terem fonte própria, ver seção 7.3).
+
+**Causa**: mesmo sendo exclusivo de supervisor, o Realizado do Listing
+era calculado no grão de **RCA** (`FATO_LISTING_RCA`, a partir de
+`COD_RCA` da aba `MIX_MIN`) e só depois somado pro supervisor via
+`ApplyMap('MAP_RCA_SUP', CodRca)` — que usa o cadastro "oficial"
+`CAD_RCA.QVD`, não o `COD_SUP` que a própria aba `MIX_MIN` já traz pronto
+pra carteira daquele mês. Se o(s) RCA(s) da carteira de Listing do
+supervisor 60 não estiverem cadastrados sob o supervisor 60 no
+`CAD_RCA` (podem estar desatualizados/diferentes do que a planilha de
+campanha usa), o rollup não encontra o supervisor 60 e a linha some —
+mesmo mecanismo de supressão de linha com métricas nulas já confirmado
+na seção 7.7 (`FAIXA ESCOLHA CERTA` do supervisor 39).
+
+**Resolução (decisão do usuário, 2026-09-23)**: `CodSupervisor` agora é
+trazido direto do `COD_SUP` da aba `MIX_MIN` e carregado através de todo
+o pipeline do Listing (`LISTING_PARTICIPANTES` → `LISTING_ELEGIVEL` →
+`LISTING_CLIENTE` → `FATO_LISTING_RCA`, seção 8 da Transformação), em vez
+de ser derivado por `ApplyMap('MAP_RCA_SUP', CodRca)` na Modelagem. Os
+blocos `REALIZADO_LISTING_SUP_TEMP`/`META_LISTING_SUP_TEMP` (seção 1.3 da
+Modelagem) agora leem `CodSupervisor` direto do QVD
+`FATO_LISTING_RCA_MES_AAAA_MM.qvd` em vez de recalculá-lo. **Mix Mínimo
+não foi alterado** (continua usando `ApplyMap('MAP_RCA_SUP', CodRca)`) —
+ele já aparecia corretamente para o supervisor 60, então a mudança ficou
+restrita ao indicador com o problema reportado; se o mesmo sintoma
+aparecer no Mix Mínimo, aplicar o mesmo padrão (`COD_SUP` de `MIX_MIN`
+carregado pela seção 7 da Transformação até `FATO_MIXMINIMO_RCA`).
+
+Validado no Qlik pelo usuário em seguida: o indicador continuava
+ausente, e não só para o supervisor 60 — para **nenhum** supervisor. Ver
+causa real na seção 7.9.
+
+## 7.9 Setembro 2026 — Listing Iniciativas nunca tinha Realizado pra ninguém: `Ramo` com capitalização diferente entre `MIX_MIN` e `LISTING_PRODUTOS` quebrava o `JOIN` (case-sensitive)
+
+**Sintoma**: após a correção da seção 7.8 (rollup RCA→Sup), o indicador
+`LISTING INICIATIVAS--100% CARTEIRA` continuou sem aparecer — não só
+pro supervisor 60, pra nenhum supervisor. Isso descartou de vez a
+hipótese de mapeamento de supervisor: o problema estava antes disso, na
+geração do próprio `FATO_LISTING_RCA` (Transformação, seção 8).
+
+**Causa confirmada** lendo `CAMPANHAS_2026_09.xlsx` diretamente: a coluna
+`RAMO` vem com capitalização **diferente** em cada aba —
+`MIX_MIN.RAMO` = `"Alimentar"` / `"Farma"` (capitalizado), enquanto
+`LISTING_PRODUTOS.RAMO` = `"ALIMENTAR"` / `"FARMA"` (tudo maiúsculo). O
+`JOIN` da seção 8.3 (`LISTING_ELEGIVEL` × `TRF_LISTING_PRODUTOS`) é um
+**inner join** por `Ramo`, e comparação de texto no Qlik é
+case-sensitive — `"Alimentar"` ≠ `"ALIMENTAR"` — então **nenhum** cliente
+sobrevivia ao join, `LISTING_ELEGIVEL` ficava vazia, e
+`FATO_LISTING_RCA` nunca tinha Realizado real pra ninguém (RCA ou
+Supervisor). Mix Mínimo não sofre disso porque seu join equivalente
+(seção 7.4, `MIXMIN_ELEGIVEL` × `TRF_MIXMIN_GRUPO`) usa `Categoria`, não
+`Ramo`.
+
+**Resolução**: `RAMO` agora é normalizado com `Upper(Trim(...))` nos dois
+lados do join — `LISTING_PARTICIPANTES` (de `MIX_MIN`, seção 8.1) e
+`TRF_LISTING_PRODUTOS` (de `LISTING_PRODUTOS`, seção 8.2) — para não
+depender de digitação consistente entre as duas abas da planilha.
+
+**Não validado no Qlik Sense ainda** — precisa reload completo (as 3
+abas, na ordem) e conferência visual das tabelas "REALIZADO RCA" e
+"REALIZADO SUPERVISOR" pro indicador Listing.
+
+Validado pelo usuário em seguida: o indicador passou a aparecer, mas só
+para o supervisor 105 — sumido pro 60 e pro 73 (Gerson). Ver seção 7.10.
+
+## 7.10 Setembro 2026 — Listing só aparecia pro supervisor 105: `PREM_SUP` do Gerson usa o código fictício (7374) em vez do real (73); supervisor 60 ainda em investigação
+
+**Sintoma**: depois da correção do `Ramo` (seção 7.9), Listing passou a
+ter Realizado de verdade, mas na tabela "REALIZADO SUPERVISOR" só
+aparecia para o supervisor 105 — sumido pros supervisores 60 e 73.
+
+**Causa confirmada pro supervisor 73 (Gerson)**: lendo `PREM_SUP` de
+`CAMPANHAS_2026_09.xlsx` direto, a linha `MIX MINIMO` e a linha
+`LISTING INICIATIVAS--100% CARTEIRA` do Gerson estão cadastradas sob
+`COD_SUP=7374` (o código fictício que junta TOPCONTAS+INTERIOR) — ao
+contrário da própria regra já documentada no script (comentário no
+`.QVS`, bloco `MAP_SUP_FICTICIO`): "MIX MINIMO e LISTING INICIATIVAS
+usam o código REAL do supervisor", mesma exceção que `GILLETTE
+TRIMESTRAL` já segue corretamente (essa está sob `COD_SUP=73` na mesma
+planilha). Como o cálculo do Realizado usa o código REAL (73, vindo de
+`COD_SUP` em `MIX_MIN`), ele nunca encontra a linha de catálogo (que
+está em 7374) — chave de junção diferente, linha some. **É dado da
+planilha, não bug do script** (mesmo padrão do item já pendente do
+Gillette, ver seção 7 abaixo). Resolução: o usuário vai corrigir
+`COD_SUP` de `7374` para `73` nas linhas `MIX MINIMO` e `LISTING
+INICIATIVAS--100% CARTEIRA` do Gerson no `PREM_SUP`.
+
+**Supervisor 60 — resolvido, não é bug (confirmado com as tabelas de
+debug, 2026-09-23)**: usuário conferiu `DEBUG_LISTING_PRODUTO_CLIENTE_
+MES_2026_09.qvd` e `DEBUG_LISTING_CLIENTE_MES_2026_09.qvd` no Qlik.
+Resultado: os 5 clientes da carteira do supervisor 60 (17367, 31536,
+111078, 318518, 334788, nos RCAs 6011/222/6050) têm
+`QtdCaixaPedidaProduto`/`QtdCaixaFaturadaProduto` nulas para os 2
+produtos exigidos do Ramo Alimentar (223254, 223275) —
+`FlagProdutoPositivado=0` em todas as linhas, logo
+`FlagClienteCompletouPedido`/`FlagClienteCompletouFaturado=0` para todos
+os 5 clientes. **Realizado genuinamente 0%** — nenhum cliente da
+carteira comprou os produtos exigidos esse mês, não é ausência de linha
+em `FATO_LISTING_RCA` (a linha existe, com valor 0, igual pros RCAs
+6011/222/6050). Com `MetaListingSup=3` (soma de `Meta=1` dos 3 RCAs),
+`PercAtingimentoFaturadoSup=0%` e `GanhoFaturadoSup=R$0` são valores
+reais calculados, não nulos.
+
+A linha sumir da tabela "REALIZADO SUPERVISOR" do Qlik Sense mesmo com
+métricas reais (zeradas) é comportamento de apresentação do **objeto**
+(provável "Suprimir valores zero" ligado no gráfico/tabela), não do
+script de carga — fora do escopo do `.QVS`. Se o usuário quiser ver a
+linha com 0%/R$0 em vez de ausente, precisa desligar essa opção nas
+propriedades de apresentação do objeto no Qlik Sense.
+
+## 7.11 Setembro 2026 — Meta de Listing pro Supervisor trocada de "qtd de RCAs" pra "qtd de Clientes"
+
+**Sintoma (achado pelo usuário, 2026-09-23)**: depois das correções das
+seções 7.9/7.10, o Listing passou a aparecer pro supervisor 60, mas
+`MetaSup=3` — o usuário esperava `5`, o número de Clientes Principais
+que ele tem cadastrados na aba `MIX_MIN` (participantes do Listing).
+
+**Causa**: a Meta de Listing pro Supervisor vinha de `FATO_LISTING_RCA`
+(grão RCA) somando `Meta=1` fixo POR RCA — para o supervisor 60, 3 RCAs
+(6011, 222, 6050) davam `MetaSup=3`, não relacionado à quantidade de
+clientes. Isso também distorcia o Realizado: um RCA com 1 cliente na
+carteira pesava igual a outro com 4 (cada RCA valia "1" na Meta,
+independente do tamanho da carteira dele).
+
+**Resolução (decisão do usuário, 2026-09-23)**: nova tabela
+`FATO_LISTING_SUP` (seção 8.8 da Transformação, gerada logo depois de
+`FATO_LISTING_RCA`, a partir da mesma `LISTING_CLIENTE`), calculada
+DIRETO no grão do Supervisor, ignorando RCA:
+- `Meta` = `Count(CodClientePrincipal)` — quantidade de Clientes
+  Principais participantes da carteira toda do supervisor.
+- `ValorPedidoLiquido`/`ValorFaturadoLiquido` = `Sum(FlagClienteCompletou...)`
+  — quantos desses clientes completaram individualmente a própria lista
+  de produtos obrigatórios do Ramo.
+
+QVD final: `FATO_LISTING_SUP_MES_AAAA_MM.qvd`. Na Modelagem (seção 1.3),
+`REALIZADO_LISTING_SUP_TEMP`/`META_LISTING_SUP_TEMP` agora leem esse QVD
+direto (`FATO_LISTING_RCA` continua existindo e alimentando
+`TRF_BASE_RCA`, mas não é mais fonte do Supervisor) — como o QVD já vem
+com `CodSupervisor` único por linha, não precisa mais de
+`GROUP BY`/reagregação antes do `LEFT JOIN` em `TRF_BASE_SUP`.
+
+Resultado esperado pro supervisor 60: `MetaSup=5`,
+`ValorFaturadoSupListing`/`ValorPedidoSupListing` = quantidade dos 5
+clientes que efetivamente compraram os produtos exigidos (confirmado
+pelas tabelas `DEBUG_LISTING_*` da seção 7.10: hoje é 0 dos 5).
+
+**Não validado no Qlik Sense ainda** — precisa reload completo (as 3
+abas, na ordem).
+
 ## 7. Pontos em aberto para continuar o projeto
 
+- **Validar a mudança de grão da Meta de Listing pro Supervisor** (ver
+  seção 7.11) — conferir no Qlik que `MetaSup` do Listing agora reflete
+  a quantidade de Clientes Principais da carteira (5 pro supervisor 60),
+  não mais quantidade de RCAs.
 - **Corrigir a planilha `CAMPANHAS_2026_09.xlsx`**: mudar `COD_SUP` da
   linha `GILLETTE TRIMESTRAL` do Gerson na aba `PREM_SUP` de `7374` para
   `73` (ver seção 7.6) — sem essa correção na planilha, o Gerson continua
@@ -976,6 +1144,17 @@ dado de cadastro faltante na planilha de Metas.
   (a catalogação em `TRF_BASE_SUP_INDICADORES` ainda viria como `7374`,
   que não bate com `MAP_GRUPO_GILLETTE_SUP`/`MAP_PERC_DEVOL_FAT_SUP_TRI`,
   ambos chaveados por `73`).
+- **Corrigir a planilha `CAMPANHAS_2026_09.xlsx`**: mudar `COD_SUP` da
+  linha `MIX MINIMO` do Gerson na aba `PREM_SUP` de `7374` para `73`
+  (ver seção 7.10 — o `LISTING INICIATIVAS--100% CARTEIRA` do Gerson já
+  foi corrigido) — sem essa correção, o Mix Mínimo continua sumido pro
+  Gerson mesmo com o Realizado calculado certo (código real 73).
+- **Conferir a opção de "Suprimir valores zero" no objeto "REALIZADO
+  SUPERVISOR" do Qlik Sense** (ver seção 7.10) — o supervisor 60 tem
+  Realizado 0% genuíno no Listing (confirmado via `DEBUG_LISTING_*`),
+  mas a linha some da tabela em vez de aparecer com R$0/0%, igual o
+  Gillette aparece com traço. Não é ajuste de script, é propriedade de
+  apresentação do objeto.
 - **Validar no Qlik Sense a correção da seção 7.6** (código correto do
   Gerson por indicador — `MAP_SUP_FICTICIO`), depois da correção da
   planilha acima: conferir que o Gerson aparece no grupo "ADRIANO/GERSON

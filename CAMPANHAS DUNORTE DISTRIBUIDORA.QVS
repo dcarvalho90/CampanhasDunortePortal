@@ -1568,11 +1568,25 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
         //     base de clientes/RCAs da aba MIX_MIN, so os campos
         //     necessarios para esta campanha.
         /////////////////////////////////////////////////////////////////////
+        // CodSupervisor vem direto da propria aba MIX_MIN (COD_SUP), nao do
+        // cadastro CAD_RCA (MAP_RCA_SUP) - decisao do usuario (2026-09-23):
+        // Listing e exclusivo de supervisor (nao existe em PREM_RCA) e a
+        // carteira do supervisor e definida pela propria planilha CAMPANHAS,
+        // entao o rollup pra Sup na Modelagem usa este campo, nao o
+        // ApplyMap('MAP_RCA_SUP', CodRca) usado pelos indicadores normais.
+        // Ramo normalizado com Upper(Trim(...)) - confirmado lendo a planilha
+        // (2026-09-23) que MIX_MIN grava "Alimentar"/"Farma" (capitalizado)
+        // enquanto LISTING_PRODUTOS grava "ALIMENTAR"/"FARMA" (maiusculo). O
+        // JOIN da secao 8.3 e um INNER JOIN por Ramo - sem normalizar, a
+        // comparacao de texto do Qlik (case-sensitive) nunca batia,
+        // LISTING_ELEGIVEL ficava vazia e o indicador nunca tinha Realizado
+        // pra ninguem (nem RCA nem Supervisor), nao so pro supervisor 60.
         LISTING_PARTICIPANTES:
         LOAD DISTINCT
-            COD_RCA      AS CodRca,
-            CODCLIPRINC  AS CodClientePrincipal,
-            RAMO         AS Ramo
+            COD_SUP             AS CodSupervisor,
+            COD_RCA             AS CodRca,
+            CODCLIPRINC         AS CodClientePrincipal,
+            Upper(Trim(RAMO))   AS Ramo
         FROM [$(vArquivoMix)]
         (ooxml, embedded labels, table is MIX_MIN)
         WHERE Not IsNull(COD_RCA);
@@ -1582,9 +1596,9 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
         /////////////////////////////////////////////////////////////////////
         TRF_LISTING_PRODUTOS:
         LOAD
-            COD_PRODUTO AS CodProduto,
-            RAMO        AS Ramo,
-            QTDMIN_CX   AS QtdMinCx
+            COD_PRODUTO         AS CodProduto,
+            Upper(Trim(RAMO))   AS Ramo,
+            QTDMIN_CX           AS QtdMinCx
         FROM [$(vArquivoMix)]
         (ooxml, embedded labels, table is LISTING_PRODUTOS)
         WHERE Not IsNull(COD_PRODUTO);
@@ -1599,6 +1613,7 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
         NoConcatenate
         LISTING_ELEGIVEL:
         LOAD
+            CodSupervisor,
             CodRca,
             CodClientePrincipal,
             Ramo
@@ -1671,6 +1686,17 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
 
         DROP TABLE LISTING_ELEGIVEL;
 
+        // VALIDAÇÃO (2026-09-23, a pedido do usuário - mesmo padrão das
+        // DEBUG do Mix Mínimo): CodSupervisor/CodRca/Cliente/Produto lado a
+        // lado com QtdMinCx e o flag de positivação, pra achar em qual
+        // Cliente+Produto a carteira de um supervisor específico está
+        // zerando (ex: supervisor 60 sumindo da tabela REALIZADO
+        // SUPERVISOR). Não afeta o cálculo - só um STORE extra de uma
+        // tabela que já existe em memória.
+        STORE LISTING_PRODUTO_FLAG INTO [$(vPathDestinoMix)DEBUG_LISTING_PRODUTO_CLIENTE_MES_$(vAnoMix)_$(vMesTxtMix).qvd] (qvd);
+
+        TRACE QVD de validacao (Listing por Cliente+Produto) gerado com sucesso: $(vPathDestinoMix)DEBUG_LISTING_PRODUTO_CLIENTE_MES_$(vAnoMix)_$(vMesTxtMix).qvd;
+
         /////////////////////////////////////////////////////////////////////
         // 8.6 LISTA COMPLETA (por Cliente)
         //     Cliente so completa o Listing se TODOS os produtos
@@ -1680,16 +1706,26 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
         /////////////////////////////////////////////////////////////////////
         LISTING_CLIENTE:
         LOAD
+            CodSupervisor,
             CodRca,
             CodClientePrincipal,
             Min(FlagProdutoPositivadoPedido)   AS FlagClienteCompletouPedido,
             Min(FlagProdutoPositivadoFaturado) AS FlagClienteCompletouFaturado
         RESIDENT LISTING_PRODUTO_FLAG
         GROUP BY
+            CodSupervisor,
             CodRca,
             CodClientePrincipal;
 
         DROP TABLE LISTING_PRODUTO_FLAG;
+
+        // VALIDAÇÃO (2026-09-23): resumo por Cliente - flag final de
+        // completou-ou-não, com CodSupervisor/CodRca visíveis, pra
+        // confirmar se a carteira de um supervisor tem cliente zerando
+        // o Min() antes de olhar o agregado por RCA/Supervisor.
+        STORE LISTING_CLIENTE INTO [$(vPathDestinoMix)DEBUG_LISTING_CLIENTE_MES_$(vAnoMix)_$(vMesTxtMix).qvd] (qvd);
+
+        TRACE QVD de validacao (Listing por Cliente) gerado com sucesso: $(vPathDestinoMix)DEBUG_LISTING_CLIENTE_MES_$(vAnoMix)_$(vMesTxtMix).qvd;
 
         /////////////////////////////////////////////////////////////////////
         // 8.7 CONSOLIDAÇÃO POR RCA - 100% CARTEIRA (TUDO OU NADA)
@@ -1701,6 +1737,7 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
         /////////////////////////////////////////////////////////////////////
         FATO_LISTING_RCA:
         LOAD
+            CodSupervisor,
             CodRca,
             'DEPARTAMENTO'         AS TipoIndicador,
             'MESATUAL'             AS PeriodoIndicador,
@@ -1711,15 +1748,51 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
             1                                  AS Meta                 // Meta fixa = 1 (100% da carteira)
         RESIDENT LISTING_CLIENTE
         GROUP BY
+            CodSupervisor,
             CodRca;
-
-        DROP TABLE LISTING_CLIENTE;
 
         STORE FATO_LISTING_RCA INTO [$(vPathDestinoMix)FATO_LISTING_RCA_MES_$(vAnoMix)_$(vMesTxtMix).qvd] (qvd);
 
         TRACE QVD de Listing Iniciativas por RCA gerado com sucesso.;
 
         DROP TABLE FATO_LISTING_RCA;
+
+        /////////////////////////////////////////////////////////////////////
+        // 8.8 CONSOLIDAÇÃO POR SUPERVISOR - CONTAGEM DE CLIENTES (2026-09-
+        //     23, decisao do usuario)
+        //     Listing e exclusivo de supervisor (nao existe em PREM_RCA,
+        //     ver DOCUMENTACAO secao 7.10) - a apuracao pro supervisor NAO
+        //     e mais "quantos RCAs bateram 100% da propria carteira"
+        //     (isso sub-representava a carteira: um RCA com 1 cliente e
+        //     outro com 4 pesavam igual). Agora e feita DIRETO no grao do
+        //     Supervisor, ignorando RCA: Meta = quantidade de Clientes
+        //     Principais participantes (Count), Realizado = quantos desses
+        //     clientes completaram individualmente a propria lista de
+        //     produtos (Sum do flag por cliente) - ex: supervisor com 5
+        //     clientes na carteira e 3 completos mostra 3 de 5 (60%), nao
+        //     mais fracao de RCA.
+        /////////////////////////////////////////////////////////////////////
+        FATO_LISTING_SUP:
+        LOAD
+            CodSupervisor,
+            'DEPARTAMENTO'         AS TipoIndicador,
+            'MESATUAL'             AS PeriodoIndicador,
+            'MANUAL'               AS ClasseIndicador,
+            'LISTING INICIATIVAS--100% CARTEIRA'  AS Indicador,
+            Sum(FlagClienteCompletouPedido)   AS ValorPedidoLiquido,   // qtd de clientes que completaram (Pedido)
+            Sum(FlagClienteCompletouFaturado) AS ValorFaturadoLiquido, // qtd de clientes que completaram (Faturado)
+            Count(CodClientePrincipal)        AS Meta                 // qtd de clientes participantes da carteira
+        RESIDENT LISTING_CLIENTE
+        GROUP BY
+            CodSupervisor;
+
+        DROP TABLE LISTING_CLIENTE;
+
+        STORE FATO_LISTING_SUP INTO [$(vPathDestinoMix)FATO_LISTING_SUP_MES_$(vAnoMix)_$(vMesTxtMix).qvd] (qvd);
+
+        TRACE QVD de Listing Iniciativas por Supervisor gerado com sucesso.;
+
+        DROP TABLE FATO_LISTING_SUP;
 
     ELSE
 
@@ -3551,49 +3624,39 @@ LEFT JOIN (TRF_BASE_SUP)
 LOAD * RESIDENT META_MIX_SUP;
 DROP TABLE META_MIX_SUP;
 
+// Fonte trocada de FATO_LISTING_RCA pra FATO_LISTING_SUP (2026-09-23,
+// decisao do usuario - ver DOCUMENTACAO secao 7.11): Listing e exclusivo
+// de supervisor (nao existe em PREM_RCA) e a apuracao antiga (RCA bate
+// 100% da propria carteira, contado por RCA) sub-representava
+// supervisores com RCAs de tamanhos bem diferentes - um RCA com 1
+// cliente pesava igual a outro com 4. FATO_LISTING_SUP ja vem pronto no
+// grao do Supervisor (secao 8.8 da Transformacao): Meta = qtd de
+// Clientes Principais da carteira toda, Realizado = qtd desses clientes
+// que completaram individualmente a propria lista - por isso aqui e so
+// LEFT JOIN direto, sem reagregar por RCA (CodSupervisor ja e chave
+// unica no QVD).
 REALIZADO_LISTING_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'LISTING INICIATIVAS--100% CARTEIRA' AS _RealizadoListingSup,
-    ValorPedidoLiquido,
-    ValorFaturadoLiquido
-FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_LISTING_RCA_MES_$(vDataCarg).qvd]
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'LISTING INICIATIVAS--100% CARTEIRA' AS _RealizadoListingSup,
+    ValorPedidoLiquido    AS ValorPedidoSupListing,
+    ValorFaturadoLiquido  AS ValorFaturadoSupListing
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_LISTING_SUP_MES_$(vDataCarg).qvd]
 (qvd);
 
-REALIZADO_LISTING_SUP:
-NoConcatenate
-LOAD
-    _RealizadoListingSup,
-    Sum(ValorPedidoLiquido) AS ValorPedidoSupListing,
-    Sum(ValorFaturadoLiquido) AS ValorFaturadoSupListing
-RESIDENT REALIZADO_LISTING_SUP_TEMP
-GROUP BY _RealizadoListingSup;
-
-DROP TABLE REALIZADO_LISTING_SUP_TEMP;
-
 LEFT JOIN (TRF_BASE_SUP)
-LOAD * RESIDENT REALIZADO_LISTING_SUP;
-DROP TABLE REALIZADO_LISTING_SUP;
+LOAD * RESIDENT REALIZADO_LISTING_SUP_TEMP;
+DROP TABLE REALIZADO_LISTING_SUP_TEMP;
 
 META_LISTING_SUP_TEMP:
 LOAD
-    '$(vDataAux)' & '|' & Text(Trim(ApplyMap('MAP_RCA_SUP', CodRca, '#ND'))) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'LISTING INICIATIVAS--100% CARTEIRA' AS _MetaListingSup,
-    Meta
-FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_LISTING_RCA_MES_$(vDataCarg).qvd]
+    '$(vDataAux)' & '|' & Text(Trim(CodSupervisor)) & '|' & '3' & '|' & 'MESATUAL' & '|' & 'DEPARTAMENTO' & '|' & 'MANUAL' & '|' & 'LISTING INICIATIVAS--100% CARTEIRA' AS _MetaListingSup,
+    Meta AS MetaListingSup
+FROM [lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/FATO_LISTING_SUP_MES_$(vDataCarg).qvd]
 (qvd);
 
-META_LISTING_SUP:
-NoConcatenate
-LOAD
-    _MetaListingSup,
-    Sum(Meta) AS MetaListingSup
-RESIDENT META_LISTING_SUP_TEMP
-GROUP BY _MetaListingSup;
-
-DROP TABLE META_LISTING_SUP_TEMP;
-
 LEFT JOIN (TRF_BASE_SUP)
-LOAD * RESIDENT META_LISTING_SUP;
-DROP TABLE META_LISTING_SUP;
+LOAD * RESIDENT META_LISTING_SUP_TEMP;
+DROP TABLE META_LISTING_SUP_TEMP;
 
 
 /*//////////////////////////////////////////////////////////////////////////
