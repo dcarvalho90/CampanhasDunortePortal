@@ -136,12 +136,11 @@ ficam residentes, associadas ao restante do modelo.
 | Mix Mínimo Contrato                    | Sim — seção 7, dentro do bloco Vendas Trimestre Móvel desde 2026-08-27 (ver item 4) |
 | Escolha Certa Especial (R$20/positivação, só RCA) | **Parcial** — o script gera o KPI `FAIXA ESCOLHA CERTA` (soma de `QTD_ESCOLHA_CERTA` por faixa), mas o cálculo do valor R$20 por positivação não aparece neste `.QVS`. Verificar se é feito em outra camada (dashboard/expressão) ou está faltando. |
 | Indicador Listing (`LISTING INICIATIVAS--100% CARTEIRA`) | **Sim (implementado e ligado ao TRF_BASE_RCA em 2026-08-26)** — seção 8 do script (cálculo) + seções 3.2/8.2 (Realizado/Meta ligados à base unificada), ver item 4.1 abaixo. Regra: cliente compra TODOS os produtos da aba `LISTING_PRODUTOS` do seu `RAMO`, cada produto exige qtd mínima em CAIXAS; RCA só ganha se 100% da carteira completar. Validado rodando no Qlik Sense. |
-| Campanha PET (Supervisor Suzy 240+340→240340) | **Não encontrado neste arquivo.** Nem o indicador PET nem o código fictício 240340 aparecem no script lido. Pode estar em outro `.qvs`/tab do projeto Qlik. |
-| Supervisor Gerson (73+74→7374)         | **Não encontrado neste arquivo.** Mesma observação acima. |
+| Campanha PET (Supervisor Suzy 240+340→240340) | **Corrigido em 2026-10-06** — até então o script nunca juntava 240+340 e os indicadores PET do Supervisor saíam com realizado e meta 0 (setembro e outubro). Agora `MAP_SUP_FICTICIO` tem 240/340 → 240340. Falta a linha `240340` na aba `SUP_DEVOL` para o ganho final. No RCA os indicadores PET sempre funcionaram. |
+| Supervisor Gerson (73+74→7374)         | **Sim** — `MAP_SUP_FICTICIO` (seção 7.6); `7374` presente em `CodSupervisor` no app junto com 73/74 (inspeção 2026-10-06). |
 
-> Ação sugerida: confirmar com quem mantém o app Qlik se PET e os
-> supervisores fictícios (7374/240340) vivem em outro script/tab antes de
-> assumir que estão faltando.
+> Atualizado em 2026-10-06: o Gerson (7374) está implementado. O PET
+> (240340) existe só como linha de prêmio — ver pontos em aberto.
 
 ## 4. Mix Mínimo — como funciona no script (seção 7, dentro do bloco "Vendas Trimestre Móvel")
 
@@ -1131,7 +1130,303 @@ pelas tabelas `DEBUG_LISTING_*` da seção 7.10: hoje é 0 dos 5).
 **Não validado no Qlik Sense ainda** — precisa reload completo (as 3
 abas, na ordem).
 
+## 7.12 Outubro 2026 — Retrato do app no Qlik Sense (inspeção via Engine API, 2026-10-06)
+
+Levantamento somente leitura do app **Campanhas Dunorte Distribuidora(8)**
+(id `409fca61-4602-4642-ad20-cfddecf156fa`, área de trabalho pessoal, não
+publicado), feito com o ambiente `qlik-enigma.js/` (`npm run inventory`,
+`npm run get-script` e `app.evaluate()`). Nenhuma alteração foi feita no
+app.
+
+**Recarga e período carregado**
+- Última recarga: `2026-10-01T03:42Z` = 30/09 23:42 no horário local →
+  o app ainda está com dados de **setembro** (`DATA`/`DataSup`/`DataRef`
+  = 01/09/2026, `TrimestreRef` = `2026-T3`).
+- Como `vAno`/`vMesAtual` vêm de `Today()`, a próxima recarga passa
+  automaticamente para outubro — exige `CAMPANHAS_2026_10.xlsx` (e a
+  planilha de Metas de outubro) em `lib://4_Plan/Metas P&G/`.
+
+**Script**: idêntico ao `.QVS` deste repositório, exceto por duas abas
+que só existem no servidor: `Main` (variáveis `SET` de formato
+numérico/data, locale pt-BR) e `Exit Script`. Ordem real das abas:
+Main → Transformação → Modelagem → Carregamento → Exit Script.
+
+**Modelo de dados** (6 tabelas, sem chave sintética nem referência
+circular):
+
+| Tabela | Linhas | Liga por |
+|---|---|---|
+| `BASE_RCA_INDICADORES_REALIZADO` | 585 | `CodRca`, `CodSupervisor` |
+| `BASE_SUP_INDICADORES_REALIZADO` | 86 | `CodSupervisor` |
+| `GANHO_FINAL_RCA` | 75 | `CodRca` |
+| `GANHO_FINAL_SUP` | 11 | `CodSupervisor` |
+| `PREMIACAO_GILLETTE_TRI` | 71 | `CodRca` |
+| `PREMIACAO_GILLETTE_TRI_SUP` | 9 | **nenhum — tabela ilhada** |
+
+- 75 RCAs; 14 códigos de supervisor (`105, 240, 240340, 29, 33, 34, 340,
+  39, 60, 73, 7374, 74, 75, 76`).
+- RCA com 14 indicadores, Supervisor com 24. **Não é bug**: a aba
+  `PREM_RCA` de `CAMPANHAS_2026_09.xlsx` tem exatamente esses 14
+  (CatFoco, Escolha Certa, Faturamento Total, Listing, Mix Mínimo,
+  Platinum Points, Positivação Procter e Rentabilidade 9% são só de
+  Supervisor em setembro).
+- Totais de referência (setembro): `GanhoFinalFaturadoRca` R$ 57.240,
+  `GanhoFinalFaturadoSup` R$ 10.340, `PremioGilletteTri` R$ 78.500,
+  `PremioGilletteTriSup` R$ 14.000.
+
+**Camada de apresentação**
+- Medidas mestre (6): `VLPEDIDO`, `VLFATURADO`, `VLDEVOLUCAO`,
+  `OBJETIVO` (`Sum(Meta)`), `PERCPEDIDO` (`Sum(PercAtingimentoPedido)`),
+  `PERCFATURADO` (`Sum(PercAtingimentoFaturado)`).
+- Dimensões mestre (9): `NOME SUPERVISOR`, `INDICADOR`, `COD VENDEDOR`,
+  `VENDEDOR`, `NOME VENDEDOR`, `DATA`, `SUPERVISOR`, `ClasseIndicador`,
+  `COD SUPERVISOR`.
+- Pasta "Minha nova pasta": tabelas REALIZADO RCA (`YDWMJ`), REALIZADO
+  SUPERVISOR (`kcXsf`), PREMIAÇÃO VENDEDORES (`jwpSWp`), PREMIAÇÃO
+  SUPERVISORES (`vapnC`), BASE PREMIACAO GILLETTE TRIMESTRAL (`TPvfcm`),
+  BASE PREMIACAO GILLETTE TRIMESTRAL SUPERVISOR (`YUYZTVm`) + filtro
+  (`dPtAFM`).
+- Pasta "Minha nova pasta (1)": DEBUG PRODUTO (`crC`) e DEBUG CLIENTE
+  (`NmGbHU`).
+
+**Problemas encontrados** (todos de apresentação/modelo, nenhum no
+cálculo do script) — detalhados em "Pontos em aberto":
+1. DEBUG PRODUTO/DEBUG CLIENTE referenciam campos que não existem mais
+   no modelo (`CodProduto`, `CodClientePrincipal`, `Flag*`) — os DEBUG
+   hoje só vão para QVD.
+2. `PERCPEDIDO`/`PERCFATURADO` somam percentuais: o total da tabela
+   REALIZADO RCA mostra 59.140% / 56.135%.
+3. `PREMIACAO_GILLETTE_TRI_SUP` não se liga a nada (usa
+   `CodSupervisorGilletteSup`); `PREMIACAO_GILLETTE_TRI` também usa um
+   código de supervisor próprio (`CodSupervisorGillette`).
+4. PREMIAÇÃO VENDEDORES não tem medidas — todos os valores (inclusive
+   ganhos) estão como dimensões, então não há totais.
+5. Pastas com nome genérico ("Minha nova pasta").
+
+## 7.13 Setembro 2026 — Snapshot local do fechamento (antes de virar para outubro)
+
+Em 2026-10-06, antes de qualquer mudança de estrutura para outubro, os
+resultados de setembro foram congelados localmente em
+`data/snapshots/2026-09/` (fora do git — `data/` está no `.gitignore`),
+lidos do app via Engine API (somente leitura):
+
+- `tabelas/` — as 6 tabelas finais, uma por arquivo: `.csv` (`;`, BOM,
+  texto como o Qlik exibe — abre direto no Excel) e `.json` (texto +
+  número sem arredondamento). `manifest.json` confere linhas exportadas
+  × `qNoOfRows` (todas OK) e `conferencia-totais.json` confere 11 totais
+  do snapshot × `Sum()` no app (todos OK — ex. `GanhoFinalFaturadoRca`
+  R$ 57.240, `GanhoFinalFaturadoSup` R$ 10.340, `PremioGilletteTri`
+  R$ 78.500, `PremioGilletteTriSup` R$ 14.000).
+- `app/` — `script.qvs`, conexões/variáveis/modelo/linhagem
+  (`export-app.js`), propriedades completas das 2 pastas privadas
+  (`pastas-privadas.json`) e dos itens mestre (`itens-mestre.json`).
+
+Gerado com `npm run snapshot -- <appId> <pasta>` (novo
+`qlik-enigma.js/examples/snapshot-tables.js`) + `export-app.js`. Repetir
+no fechamento de cada mês.
+
+**Independe do `HISTORICO_*.qvd` do servidor**: em tese a recarga de
+outubro preserva setembro nele (só substitui o período atual — seção
+7.4), mas a segunda recarga ainda não foi validada; o snapshot local é a
+garantia caso algo dê errado.
+
+## 7.14 Outubro 2026 — Mês de apuração centralizado em `vDataRefCarga` (recarga do fechamento de setembro)
+
+**Motivo (pedido do usuário, 2026-10-06)**: recarregar setembro (mês
+fechado — a última carga foi em 30/09 23:42, antes do fim do mês) já
+estando em outubro, antes de mudar a estrutura para outubro.
+
+**Problema**: o mês vinha de `Today()` em ~35 `LET` espalhados pelos
+blocos (só parte deles tinha a alternativa comentada
+`AddMonths(Today(), -1)`; Trimestre Móvel, Metas P&G, `vDataCarg`/
+`vDataAux` e o Carregamento não tinham). O ponto crítico era o
+**Carregamento**: o filtro de substituição do histórico
+(`WHERE MonthStart(DATA) <> MonthStart(Today())` e equivalentes) e os
+campos `DataRef`/`DataRefSup` usavam `Today()` direto — recarregar
+setembro em outubro removeria "outubro" do `HISTORICO_*.qvd` (que não
+existe) e **duplicaria setembro**, além de gravar `DataRef=01/10/2026`
+nos ganhos de setembro.
+
+**Correção**: variável única no topo da aba Transformação:
+
+```
+LET vDataRefCarga = Num(MakeDate(2026, 9, 1));   // SETEMBRO/2026 - fechamento
+// padrão: LET vDataRefCarga = Num(MonthStart(Today()));
+```
+
+- Todos os `LET` de período usam `vDataRefCarga` no lugar de `Today()`
+  (`MonthStart(Today())` → `vDataRefCarga`, já que a variável é sempre
+  início de mês) — mesmas funções de antes (`Year`, `Month`,
+  `Num(..., '00')`, `AddMonths`), então os formatos de nome de arquivo
+  não mudam.
+- Carregamento: os 4 `WHERE ... <> MonthStart(Today())` e os 2
+  `Date(MonthStart(Today())) AS DataRef/DataRefSup` usam
+  `$(vDataRefCarga)`. O trimestre Gillette (`TrimestreRef`) já vinha de
+  `vAno`/`vTrimestre`, que agora derivam da variável.
+- Removidas as alternativas comentadas `//LET ... AddMonths(Today(), -1)`
+  e `// LET vDataCarg/vDataAux ... Today()-5` — contornariam a
+  referência única.
+
+**Conferido via `app.evaluate()`** (Engine do app, sem gravar nada) para
+`MakeDate(2026, 9, 1)`: `vAno`=2026, mês `'09'`, `Month()`=`set`,
+trimestre 3 (meses 7–9), `vDataCarg`=`2026_09`, `vDataAux`=`01/09/2026`,
+arquivo de metas `METAS_2026-SET.xlsx`, Trimestre Móvel de 01/07/2026 a
+01/09/2026 — idênticos aos que a carga de setembro gerou em setembro.
+
+**Gravado no app em 2026-10-06** via Engine API (`setScript` +
+`doSave`, sem recarga): abas Transformação/Modelagem/Carregamento
+substituídas pelo `.QVS` local, `Main` e `Exit Script` do servidor
+preservadas; script relido e conferido igual ao enviado;
+`CheckScriptSyntax` sem erros. Script anterior do servidor salvo em
+`data/snapshots/2026-09/app/script.qvs`.
+
+**Operação**:
+1. Recarregar o app → reprocessa setembro e substitui setembro no
+   `HISTORICO_*.qvd`.
+2. Conferir contra o snapshot da seção 7.13 (os totais podem mudar
+   legitimamente — a carga de 30/09 23:42 não tinha o mês completo).
+3. Voltar `vDataRefCarga` para `Num(MonthStart(Today()))` antes da
+   primeira carga de outubro.
+
+**Validado no Qlik Sense em 2026-10-06** (recarga do usuário às
+14:22Z, conferida via Engine API contra o snapshot da seção 7.13):
+- Mesmas linhas nas 6 tabelas (585/86/75/11/71/9), sem chave duplicada;
+  `DATA`/`DataSup`/`DataRef`/`DataRefSup` só `01/09/2026` e
+  `TrimestreRef`/`TrimestreRefSup` só `2026-T3` → o histórico
+  **substituiu** setembro, não duplicou (fecha o ponto em aberto da
+  seção 7.4 sobre a segunda recarga no mesmo período).
+- Mudanças coerentes com o mês completo (a carga anterior foi 30/09
+  23:42): Faturado +R$ 376.377 (notas emitidas no fim do mês), Pedido
+  −R$ 13.198 (cancelamentos), Devolução inalterada.
+- Premiação: `GanhoFinalFaturadoRca` 57.240 → 59.940 (7 RCAs subiram
+  de faixa: 7620, 2932, 2953, 2533, 2903, 7692, 2972; ninguém perdeu);
+  Gillette RCA total inalterado (78.500) mas o ranking de um grupo
+  mudou (7658 1º R$5.000, 2929 2º R$4.000, 7659 entra em 3º R$3.000,
+  7693 sai do pódio); Gillette Supervisor 14.000 → 18.000 (sup 33
+  passou de 99,7% para 100,1% e entrou em 2º, R$4.000); ganhos de
+  Pedido e `GanhoFinalFaturadoSup` inalterados.
+
+Snapshot pós-recarga (resultado oficial de setembro):
+`data/snapshots/2026-09-fechamento/tabelas/`. O de
+`data/snapshots/2026-09/` fica como a versão parcial de 30/09.
+
+## 7.15 Outubro 2026 — Gillette Trimestral sai, entra Ranking de Faturamento mensal
+
+Regras de negócio e respostas do usuário: `campanhas/CAMPANHAS MENSAL OUT
+2026.MD`. Resumo técnico do que mudou no `.QVS`:
+
+**Detecção da campanha de ranking pelas abas** (início da aba
+Transformação): `vTemGillette` = existe a aba `PREM_RANK_GILLETTE_RCA`;
+`vTemRankingFat` = existe a aba `PREM_RANK_RCA`. Teste com `FIRST 1 LOAD`
+sob `SET ErrorMode = 0` e `TableNumber()` (aba ausente vira flag 0, não
+erro) — validado numa sessão do Qlik: setembro → Gillette=1/Ranking=0,
+outubro → 0/1. Antes, a carga de outubro abortaria lendo as 4 abas do
+Gillette que deixaram de existir.
+
+**Gillette condicionado a `vTemGillette`**: transformadores
+`PREM_RANK_GILLETTE_RCA/_SUP`, `RCA_DEVOL_RANK`, `SUP_DEVOL_RANK`, os dois
+rankings da Modelagem e os itens 5/6 do Carregamento. Mês sem Gillette:
+`PREMIACAO_GILLETTE_TRI(_SUP)` vêm **só do histórico** (lido, não
+regravado) — o 2026-T3 continua no modelo.
+
+**Ranking de Faturamento** (`vTemRankingFat`):
+- Transformação: 4 QVDs `TRF_RANK_FAT_{RCA,SUP}_{PARTICIPANTES,PREMIO}_AAAA_MM`.
+  `Num()` nos códigos — `COD_SUP` da aba `PREM_RANK_SUP` está formatado
+  como data no Excel (33 era lido como `01/02/1900`).
+- Modelagem (bloco no fim da aba, depois do Gillette Supervisor):
+  realizado = Σ `ValorFaturadoLiquido` de `FATO_VENDAS_DEPARTAMENTO_MES`
+  (todos os departamentos); meta = Σ `MetaFat` de
+  `TRF_METAS_DEPARTAMENTO_MES`; % devolução = o mesmo da premiação final
+  (`GANHO_FINAL_RCA`); FAIXA3 de `TRF_RCA_DEVOL`/`TRF_SUP_DEVOL`. Zera o %
+  do ranking se devolução ≥ FAIXA3; pódio só ≥ 100%; posição por grupo
+  (RCA, `Peek()`) ou grupo único (Supervisor, `RowNo()`). Supervisor pelo
+  código real (`MAP_RCA_SUP`, todos os RCAs do time); FAIXA3 do próprio
+  código ou do fictício (73 → 7374).
+- Tabelas finais: `PREMIACAO_RANKING_FAT` (liga só por `CodRca`) e
+  `PREMIACAO_RANKING_FAT_SUP` (liga só por `CodSupervisor` — diferente da
+  Gillette Sup, que é ilhada; sem loop porque nenhuma das duas tem os dois
+  códigos). Demais campos com sufixo `RankFat`/`RankFatSup`.
+- Carregamento itens 7/8: `HISTORICO_PREMIACAO_RANKING_FAT(_SUP).qvd`,
+  grão mensal (`DataRefRankFat`/`DataRefRankFatSup`), mesmo padrão de
+  substituição do mês atual.
+
+**Categoria Foco por planilha** (bloco 6.1-A da Transformação, seção
+"Vendas Mês Atual"): categorias = indicadores `CATFOCO <NOME>` da aba
+`INDICADORES`; produtos = aba `<NOME>` de `PRODUTOS CATEGORIA FOCO -
+<MÊS>'<AA>.xls` (biff); clientes filtrados por `vCatFocoPlataformas` /
+`vCatFocoRamos` (variáveis no início do bloco — revisar a cada mês);
+positivação = valor líquido > 0, Pedido e Faturado separados. Gera o mesmo
+`FATO_CATFOCO_RCA` (a Modelagem não mudou). Sem a planilha do mês, roda a
+regra fixa Always/Pampers (6.1-B) — setembro continua reprocessável.
+**Armadilha do apóstrofo** (`OUTUBRO'26`): a variável com o caminho só
+pode ser expandida dentro de `FROM [...]`; em `FileSize('$(...)')` quebra a
+string e em `TRACE` **engole o resto do script sem erro** (achado testando
+numa sessão — o reload "terminava" sem criar nenhuma tabela depois do
+TRACE). `FileSize` usa a variável pelo nome.
+
+**Interface no app (criada via Engine API em 2026-10-06)**: pasta
+"Ranking Faturamento" (`1436f7e5-845b-4f4f-bc12-2054645725fa`) com filtro
+(Mês RCA / Mês Supervisor / Grupo), 3 KPIs (Prêmio Ranking RCA, Prêmio
+Ranking Supervisor, RCAs no pódio) e 2 tabelas: "RANKING DE FATURAMENTO -
+RCA" (`713a1139-…`, Mês + Grupo + Cod/Nome Vendedor + Posição, ordenada
+por grupo e % ranking desc) e "… - SUPERVISOR" (`c56d78c8-…`). Itens
+mestres com a tag `Ranking Faturamento`: 5 dimensões (`RANK FAT - MES
+(RCA)`, `- GRUPO`, `- POSICAO (RCA)`, `- MES (SUP)`, `- POSICAO (SUP)`) e
+17 medidas (`RANK FAT - …` e `RANK FAT SUP - …`: REALIZADO, META, %
+ATINGIMENTO, % DEVOLUCAO, FAIXA 3 DEVOLUCAO, ZERADO POR DEVOLUCAO, %
+RANKING, PREMIO; + `RANK FAT - RCAS NO PODIO`). % atingimento é razão de
+somas (não `Sum()` de %); % devolução/faixa/% ranking usam `Only()` (valor
+por linha, vazio no total). As tabelas usam os itens mestres
+(`qLibraryId`) — alterar a medida mestre propaga. Conferido após criar:
+32/6 linhas, sem erro de expressão, % igual ao do modelo.
+
+**Outros ajustes**: catálogos `PREM_RCA`/`PREM_SUP` ignoram linhas sem
+código/indicador (a planilha de outubro tem ~286 linhas vazias
+formatadas); `RANKING FATURAMENTO` fora do catálogo e do `TRF_PREM_SUP`
+(é só marcação). Mix Mínimo/Listing com abas de produto vazias: testado
+numa sessão do Qlik que tabelas de 0 linhas são criadas e aceitam
+`RESIDENT`/`JOIN`/`DROP` — o bloco roda e gera realizado 0.
+
+**Validação feita (sem recarregar o app)**: `CheckScriptSyntax` sem erros
+no script completo; execução isolada do bloco de ranking numa sessão
+(planilha de outubro + vendas/metas/devolução de setembro, sem `STORE`):
+32 RCAs / 6 supervisores, posições, prêmios e zeragem por devolução
+conforme as regras. **Não validado no Qlik Sense com recarga real.**
+
+**Gravado no app em 2026-10-06** via Engine API (`setScript` + `doSave`,
+sem recarga; abas Main/Exit Script do servidor preservadas; relido igual
+ao enviado; `CheckScriptSyntax` sem erros). Script anterior (versão de
+setembro com `vDataRefCarga` no mês corrente) salvo em
+`data/snapshots/2026-09-fechamento/app/script.qvs`.
+
 ## 7. Pontos em aberto para continuar o projeto
+
+- **Depois da primeira recarga de outubro**, conferir que setembro
+  continua no `HISTORICO_*.qvd` comparando com o snapshot de fechamento
+  (`data/snapshots/2026-09-fechamento/`, seção 7.14 — ex.:
+  `Sum({<DataRef={'01/09/2026'}>} GanhoFinalFaturadoRca)` = 59.940).
+
+- **Histórico acumulado vai somar setembro + outubro na próxima
+  recarga** (ver seções 7.4 e 7.12) — a partir da recarga de outubro as
+  tabelas finais passam a ter 2 períodos, e quase todos os objetos do app
+  usam `CodRca`/`CodSupervisor` sem filtrar `DATA`/`DataSup`/`DataRef`/
+  `DataRefSup`/`TrimestreRef`/`TrimestreRefSup`. Ajustar os objetos (ou
+  forçar seleção de período) **antes** de recarregar.
+- **Medidas mestre `PERCPEDIDO`/`PERCFATURADO` somam percentuais** (seção
+  7.12) — trocar para razão de somas, ex.
+  `Sum(ValorFaturadoLiquido)/Sum(Meta)`, para o total e qualquer
+  agregação acima do grão RCA+Indicador fazer sentido.
+- **Remover ou refazer a pasta de DEBUG** (objetos `crC`/`NmGbHU`) — os
+  campos que ela usa não existem mais no modelo; para depurar, ler os
+  QVDs `DEBUG_*` direto.
+- **Decidir se `PREMIACAO_GILLETTE_TRI_SUP` deve ficar ilhada** — se a
+  intenção é filtrar pelo supervisor, renomear
+  `CodSupervisorGilletteSup` → `CodSupervisor` só nessa tabela (conferir
+  antes que não cria loop com `BASE_SUP_INDICADORES_REALIZADO`/
+  `GANHO_FINAL_SUP` — regra de referência circular da seção 5).
+- **Tabela PREMIAÇÃO VENDEDORES (`jwpSWp`)**: passar os valores numéricos
+  (ganhos, totais, %) de dimensão para medida, para ter linha de total.
+- Renomear as pastas do app ("Minha nova pasta").
 
 - **Validar a mudança de grão da Meta de Listing pro Supervisor** (ver
   seção 7.11) — conferir no Qlik que `MetaSup` do Listing agora reflete
@@ -1223,6 +1518,49 @@ abas, na ordem).
   Listing Iniciativas), e (2) mais um `CONCATENATE` na montagem de
   `REALIZADO_SECAO` (Modelagem), igual ao que já existe para Trimestre
   Fixo e Mês Atual.
-- O script assume `Today()` como referência de mês/trimestre em ~10
-  pontos diferentes — se for necessário reprocessar meses fechados,
-  vale adicionar parametrização.
+- ~~O script assume `Today()` como referência de mês/trimestre em ~10
+  pontos diferentes~~ — **resolvido em 2026-10-06** com
+  `vDataRefCarga` (seção 7.14).
+- `vDataRefCarga` **voltou para `Num(MonthStart(Today()))`** e foi
+  gravado no app em 2026-10-06 (setembro fechado).
+- **Supervisor PET 240340** (zerado em set e out/2026): **corrigido no
+  script em 2026-10-06** — `240 → 240340` e `340 → 240340` no
+  `MAP_SUP_FICTICIO` (nenhuma aba usa 240/340 isolados). Usuário incluiu
+  o 240340 na `SUP_DEVOL`. **Validado na recarga de 2026-10-06 22:24Z**:
+  os 6 indicadores PET do 240340 com realizado e meta (ex: Nexgard Spectra
+  R$ 9.107 / R$ 195.600), faixa de devolução 0,5% e repasse 100%.
+  Setembro continua com PET zerado no histórico (foi gravado antes da
+  correção) — só muda se setembro for reprocessado (`vDataRefCarga`).
+- **Meta de CATFOCO VENUS = 0 no app (out/2026)**: as 71 linhas do VENUS
+  na aba `METACAT_FOCO` estavam sem a coluna `F` (supervisor, chave da
+  meta do Supervisor) — **corrigido na planilha pelo usuário** (versão
+  de 2026-10-06 20:44) e **validado na recarga de 22:24Z**: Venus 1.033,
+  Presto 3 1.033, Pantene Bambu 1.922 (sups 29, 39, 7374, 75, 76). A meta de Presto 3/Pantene Bambu no
+  app (1.033 / 1.922) é só a dos supervisores com a campanha no
+  `PREM_SUP` (33 e 60 têm meta na planilha mas não a campanha) — correto.
+- **Supervisor 79 (Rafaela) x 29 (Hudson) em out/2026**: `CAD_RCA` (ERP)
+  ainda tem o time da Rafaela no 29; a planilha usa 79. Sup 79 sai zerado
+  e o 29 recebe o time da Rafaela — usuário validando ajuste na planilha
+  ou no ERP (detalhe em `campanhas/CAMPANHAS MENSAL OUT 2026.MD`).
+- **Primeira recarga de outubro feita em 2026-10-06 19:07Z** e conferida
+  via Engine: setembro intacto (59.940), outubro sem duplicar, ranking
+  32/6, Gillette T3 do histórico, Cat Foco com realizado (meta 0 até o
+  METAS ser atualizado). O erro no log ("Field 'GRUPO_RANK' not found",
+  em `TMP_ABA_GILLETTE`) é o teste da aba `PREM_RANK_GILLETTE_RCA` sob
+  `ErrorMode=0` — **esperado e inofensivo**, aparece em toda carga de mês
+  sem Gillette. Testado em sessão: aba inexistente (xlsx e xls) não cria
+  a tabela nem cai na 1ª aba do arquivo. Usuário decidiu manter assim
+  (2026-10-06) em vez de detectar pelo conteúdo da planilha.
+- **Outubro (seção 7.15)**: validar na primeira recarga real — trace
+  "Campanhas de ranking ... Gillette=0 | Ranking Faturamento=1",
+  `PREMIACAO_RANKING_FAT` com 32 RCAs e `_SUP` com 6, `PREMIACAO_GILLETTE_TRI`
+  ainda com o 2026-T3 (vindo do histórico). Objetos do ranking criados
+  no app (pasta "Ranking Faturamento", 2026-10-06).
+- **Categoria Foco de outubro** implementada (seção 7.15) — validar na
+  primeira recarga: trace "Categoria Foco pela planilha de produtos de
+  OUTUBRO/2026" e as 3 categorias com realizado em
+  `BASE_SUP_INDICADORES_REALIZADO`. A meta depende da aba `METACAT_FOCO`
+  do `METAS_2026-OUT.xlsx` trazer `CAT_FOCO` = PRESTO 3 / VENUS / PANTENE
+  BAMBU.
+- **`METAS_2026-OUT.xlsx`** na rede ainda é cópia de setembro (verificado
+  em 2026-10-06) — metas de outubro dependem da atualização do arquivo.

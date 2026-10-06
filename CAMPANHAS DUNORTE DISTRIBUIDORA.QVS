@@ -1,4 +1,15 @@
 ///$tab Transformação
+///////////////////////////////////////////////////////////////////////////
+// MES DE APURACAO DA CARGA - referencia UNICA de periodo do script
+// Todos os blocos (Transformacao, Modelagem e Carregamento) derivam
+// ano/mes/trimestre/vDataCarg/vDataAux desta variavel, e o Carregamento
+// a usa para substituir o periodo no HISTORICO_*.qvd (sem duplicar).
+//   - Mes corrente (padrao):      LET vDataRefCarga = Num(MonthStart(Today()));
+//   - Reprocessar mes fechado:    LET vDataRefCarga = Num(MakeDate(2026, 9, 1));
+// Lembrar de voltar ao padrao depois de reprocessar um mes fechado.
+///////////////////////////////////////////////////////////////////////////
+LET vDataRefCarga = Num(MonthStart(Today()));   // padrao: mes corrente (setembro/2026 reprocessado e fechado em 2026-10-06)
+
 //1. SECAO MAPPING
 MAP_SUP:
 MAPPING
@@ -44,12 +55,20 @@ FROM [lib://Carga_Duno/EXTRATOR/CADASTRO/CAD_RCA.QVD] (qvd);
 // estava antes desta correcao).
 //
 // Default do ApplyMap = o proprio codigo, pra nao afetar nenhum outro
-// supervisor alem do Gerson.
+// supervisor alem dos listados abaixo.
+//
+// 2026-10-06: incluida a Suzy (campanha PET): 240 + 340 (ESP) -> 240340.
+// A aba PREM_SUP so cadastra o PET sob 240340 (nunca 240/340 isolados) e
+// ate aqui nada juntava os dois codigos reais - os indicadores PET do
+// Supervisor saiam com realizado e meta 0 (setembro e outubro). Para a
+// faixa de repasse o 240340 tambem precisa de linha na aba SUP_DEVOL.
 MAP_SUP_FICTICIO:
 MAPPING LOAD * INLINE [
 CodSupervisorReal, CodSupervisorFicticio
 73, 7374
 74, 7374
+240, 240340
+340, 240340
 ];
 
 MAP_CLIENTE_PRINC:
@@ -84,18 +103,65 @@ SET vPathMetasPG   = 'lib://4_Plan/Metas P&G/';
 SET vPathCampanhas = 'lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/CAMPANHAS/';
 SET vPathVendasMes = 'lib://Carga_Duno/TESTE/TRANSFORMADOR/MES/COMERCIAL/MEGA MARCAS/';
 
-LET vAno      = Year(Today());
-LET vMesAtual = Num(Month(Today()), '00');
-//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAno      = Year(vDataRefCarga);
+LET vMesAtual = Num(Month(vDataRefCarga), '00');
 
+///////////////////////////////////////////////////////////////////////////
+// CAMPANHA DE RANKING DO MES - DETECTADA PELAS ABAS DA PLANILHA CAMPANHAS
+// Ate setembro/2026 o ranking era o Gillette Trimestral (abas
+// PREM_RANK_GILLETTE_RCA/_SUP + RCA_DEVOL_RANK/SUP_DEVOL_RANK). A partir de
+// outubro/2026 e o Ranking de Faturamento mensal (abas PREM_RANK_RCA/
+// PREM_RANK_SUP) e as abas do Gillette deixaram de existir - le-las sem
+// checar abortava a carga ("table not found"). Cada bloco de ranking
+// (Transformacao, Modelagem e Carregamento) so roda se a aba dele existe.
+// ErrorMode=0 so durante o teste: aba ausente vira flag 0, nao erro.
+///////////////////////////////////////////////////////////////////////////
+LET vArquivoCampanhasMes = '$(vPathMetasPG)CAMPANHAS_$(vAno)_$(vMesAtual).xlsx';
+LET vTemGillette   = 0;
+LET vTemRankingFat = 0;
+
+IF Not IsNull(FileSize('$(vArquivoCampanhasMes)')) THEN
+
+    SET ErrorMode = 0;
+
+    TMP_ABA_GILLETTE:
+    FIRST 1 LOAD GRUPO_RANK AS _ChkGillette
+    FROM [$(vArquivoCampanhasMes)]
+    (ooxml, embedded labels, table is PREM_RANK_GILLETTE_RCA);
+
+    TMP_ABA_RANK_FAT:
+    FIRST 1 LOAD COD_RCA AS _ChkRankFat
+    FROM [$(vArquivoCampanhasMes)]
+    (ooxml, embedded labels, table is PREM_RANK_RCA);
+
+    SET ErrorMode = 1;
+
+    LET vTemGillette   = If(IsNull(TableNumber('TMP_ABA_GILLETTE')), 0, 1);
+    LET vTemRankingFat = If(IsNull(TableNumber('TMP_ABA_RANK_FAT')), 0, 1);
+
+    IF $(vTemGillette) = 1 THEN
+        DROP TABLE TMP_ABA_GILLETTE;
+    ENDIF
+    IF $(vTemRankingFat) = 1 THEN
+        DROP TABLE TMP_ABA_RANK_FAT;
+    ENDIF
+
+ENDIF
+
+TRACE Campanhas de ranking em $(vMesAtual)/$(vAno): Gillette Trimestral=$(vTemGillette) | Ranking Faturamento=$(vTemRankingFat);
+
+// WHERE (2026-10): a planilha de outubro traz centenas de linhas vazias
+// formatadas no fim da aba PREM_RCA - sem o filtro viravam registros com
+// RCA/Indicador nulos no catalogo.
 BASE_RCA_INDICADORES:
 LOAD
     DATA,
     COD_RCA,
     INDICADOR
-    
+
 FROM [lib://4_Plan/Metas P&G/CAMPANHAS_$(vAno)_$(vMesAtual).xlsx]
-(ooxml, embedded labels, table is PREM_RCA);
+(ooxml, embedded labels, table is PREM_RCA)
+WHERE Not IsNull(COD_RCA) And Len(Trim(INDICADOR)) > 0;
 
 
 LEFT JOIN (BASE_RCA_INDICADORES)
@@ -142,6 +208,9 @@ DROP TABLE [TRF_BASE_RCA_INDICADORES_$(vAno)_$(vMesAtual)];
 // em PREM_RCA), nao ha nada pra somar. Ver Modelagem, bloco
 // "PARTE 1.1 - REALIZADO DOS INDICADORES EXCLUSIVOS DE SUPERVISOR".
 ///////////////////////////////////////////////////////////////////////////
+// 'RANKING FATURAMENTO' (out/2026) e so marcacao na aba PREM_SUP - nao e
+// indicador do catalogo; o ranking e calculado a parte (Modelagem, bloco
+// RANKING DE FATURAMENTO) com os participantes da aba PREM_RANK_SUP.
 BASE_SUP_INDICADORES:
 LOAD
     DATA,
@@ -149,7 +218,9 @@ LOAD
     INDICADOR
 
 FROM [lib://4_Plan/Metas P&G/CAMPANHAS_$(vAno)_$(vMesAtual).xlsx]
-(ooxml, embedded labels, table is PREM_SUP);
+(ooxml, embedded labels, table is PREM_SUP)
+WHERE Not IsNull(COD_SUP) And Len(Trim(INDICADOR)) > 0
+  And INDICADOR <> 'RANKING FATURAMENTO';
 
 
 LEFT JOIN (BASE_SUP_INDICADORES)
@@ -194,15 +265,14 @@ DROP TABLE [TRF_BASE_SUP_INDICADORES_$(vAno)_$(vMesAtual)];
 SET vPathOrigemRank  = '$(vPathMetasPG)';
 SET vPathDestinoRank = '$(vPathCampanhas)';
 
-LET vAnoRank    = Year(Today());
-LET vMesTxtRank = Num(Month(Today()), '00');
-//LET vMesTxtRank = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoRank    = Year(vDataRefCarga);
+LET vMesTxtRank = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoRank            = '$(vPathOrigemRank)CAMPANHAS_$(vAnoRank)_$(vMesTxtRank).xlsx';
 LET vNomeArquivoPremRank     = 'TRF_PREM_RANK_GILLETTE_RCA_$(vAnoRank)_$(vMesTxtRank).qvd';
 LET vNomeArquivoSupGrupo     = 'TRF_SUP_GRUPO_GILLETTE_RCA_$(vAnoRank)_$(vMesTxtRank).qvd';
 
-IF Not IsNull(FileSize('$(vArquivoRank)')) THEN
+IF Not IsNull(FileSize('$(vArquivoRank)')) And $(vTemGillette) = 1 THEN
 
     TRACE Carregando PREM_RANK_GILLETTE_RCA $(vMesTxtRank)/$(vAnoRank)...;
 
@@ -247,7 +317,7 @@ IF Not IsNull(FileSize('$(vArquivoRank)')) THEN
 
 ELSE
 
-    TRACE >>> ATENCAO: planilha CAMPANHAS $(vMesTxtRank)/$(vAnoRank) ainda nao disponivel ($(vArquivoRank)). QVDs de Ranking Gillette RCA nao foram gerados.;
+    TRACE >>> Planilha CAMPANHAS $(vMesTxtRank)/$(vAnoRank) indisponivel ou sem a aba PREM_RANK_GILLETTE_RCA (sem Gillette no mes). QVDs de Ranking Gillette RCA nao foram gerados.;
 
 ENDIF
 
@@ -263,15 +333,14 @@ ENDIF
 SET vPathOrigemRankSup  = '$(vPathMetasPG)';
 SET vPathDestinoRankSup = '$(vPathCampanhas)';
 
-LET vAnoRankSup    = Year(Today());
-LET vMesTxtRankSup = Num(Month(Today()), '00');
-//LET vMesTxtRankSup = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoRankSup    = Year(vDataRefCarga);
+LET vMesTxtRankSup = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoRankSup            = '$(vPathOrigemRankSup)CAMPANHAS_$(vAnoRankSup)_$(vMesTxtRankSup).xlsx';
 LET vNomeArquivoPremRankSup    = 'TRF_PREM_RANK_GILLETTE_SUP_$(vAnoRankSup)_$(vMesTxtRankSup).qvd';
 LET vNomeArquivoSupGrupoSup    = 'TRF_SUP_GRUPO_GILLETTE_SUP_$(vAnoRankSup)_$(vMesTxtRankSup).qvd';
 
-IF Not IsNull(FileSize('$(vArquivoRankSup)')) THEN
+IF Not IsNull(FileSize('$(vArquivoRankSup)')) And $(vTemGillette) = 1 THEN
 
     TRACE Carregando PREM_RANK_GILLETTE_SUP $(vMesTxtRankSup)/$(vAnoRankSup)...;
 
@@ -316,7 +385,79 @@ IF Not IsNull(FileSize('$(vArquivoRankSup)')) THEN
 
 ELSE
 
-    TRACE >>> ATENCAO: planilha CAMPANHAS $(vMesTxtRankSup)/$(vAnoRankSup) ainda nao disponivel ($(vArquivoRankSup)). QVDs de Ranking Gillette SUP nao foram gerados.;
+    TRACE >>> Planilha CAMPANHAS $(vMesTxtRankSup)/$(vAnoRankSup) indisponivel ou sem a aba PREM_RANK_GILLETTE_SUP (sem Gillette no mes). QVDs de Ranking Gillette SUP nao foram gerados.;
+
+ENDIF
+
+
+///////////////////////////////////////////////////////////////////////////
+// TRANSFORMADOR PREM_RANK_RCA / PREM_RANK_SUP - RANKING DE FATURAMENTO
+// (planilha CAMPANHAS, a partir de outubro/2026)
+// So roda se a aba PREM_RANK_RCA existe (vTemRankingFat, ver deteccao no
+// inicio da aba). Layout das abas:
+//   PREM_RANK_RCA: GRUPO_RANK/POSICAO/PREMIO (tabela de premio por grupo)
+//     na MESMA linha do participante COD_RCA - cada RCA aparece uma vez
+//     por posicao premiada do grupo, por isso os dois LOAD DISTINCT.
+//   PREM_RANK_SUP: GRUPO_RANK/POSICAO/PREMIO (grupo unico) nas primeiras
+//     linhas e os participantes em COD_SUP (linhas extras so com COD_SUP).
+// Num() nos codigos: COD_SUP vem formatado como data na planilha (33 era
+// lido como 01/02/1900) - sem o Num() o texto nao bate com CodSupervisor.
+// Calculo do ranking: Modelagem, bloco "RANKING DE FATURAMENTO".
+///////////////////////////////////////////////////////////////////////////
+LET vNomeArquivoRankFatRca       = 'TRF_RANK_FAT_RCA_PARTICIPANTES_$(vAno)_$(vMesAtual).qvd';
+LET vNomeArquivoRankFatRcaPremio = 'TRF_RANK_FAT_RCA_PREMIO_$(vAno)_$(vMesAtual).qvd';
+LET vNomeArquivoRankFatSup       = 'TRF_RANK_FAT_SUP_PARTICIPANTES_$(vAno)_$(vMesAtual).qvd';
+LET vNomeArquivoRankFatSupPremio = 'TRF_RANK_FAT_SUP_PREMIO_$(vAno)_$(vMesAtual).qvd';
+
+IF $(vTemRankingFat) = 1 THEN
+
+    TRACE Carregando PREM_RANK_RCA / PREM_RANK_SUP $(vMesAtual)/$(vAno)...;
+
+    TRF_RANK_FAT_RCA_PARTICIPANTES:
+    LOAD DISTINCT
+        Num(COD_RCA)     AS CodRca,
+        Trim(GRUPO_RANK) AS GrupoRankFat
+    FROM [$(vArquivoCampanhasMes)]
+    (ooxml, embedded labels, table is PREM_RANK_RCA)
+    WHERE Not IsNull(COD_RCA) And Len(Trim(GRUPO_RANK)) > 0;
+
+    STORE TRF_RANK_FAT_RCA_PARTICIPANTES INTO [$(vPathCampanhas)$(vNomeArquivoRankFatRca)] (qvd);
+    DROP TABLE TRF_RANK_FAT_RCA_PARTICIPANTES;
+
+    TRF_RANK_FAT_RCA_PREMIO:
+    LOAD DISTINCT
+        Trim(GRUPO_RANK) AS GrupoRankFat,
+        POSICAO          AS PosicaoRankFat,
+        PREMIO           AS PremioRankFat
+    FROM [$(vArquivoCampanhasMes)]
+    (ooxml, embedded labels, table is PREM_RANK_RCA)
+    WHERE Len(Trim(GRUPO_RANK)) > 0 And Not IsNull(POSICAO);
+
+    STORE TRF_RANK_FAT_RCA_PREMIO INTO [$(vPathCampanhas)$(vNomeArquivoRankFatRcaPremio)] (qvd);
+    DROP TABLE TRF_RANK_FAT_RCA_PREMIO;
+
+    TRF_RANK_FAT_SUP_PARTICIPANTES:
+    LOAD DISTINCT
+        Num(COD_SUP) AS CodSupervisor
+    FROM [$(vArquivoCampanhasMes)]
+    (ooxml, embedded labels, table is PREM_RANK_SUP)
+    WHERE Not IsNull(COD_SUP);
+
+    STORE TRF_RANK_FAT_SUP_PARTICIPANTES INTO [$(vPathCampanhas)$(vNomeArquivoRankFatSup)] (qvd);
+    DROP TABLE TRF_RANK_FAT_SUP_PARTICIPANTES;
+
+    TRF_RANK_FAT_SUP_PREMIO:
+    LOAD DISTINCT
+        POSICAO AS PosicaoRankFatSup,
+        PREMIO  AS PremioRankFatSup
+    FROM [$(vArquivoCampanhasMes)]
+    (ooxml, embedded labels, table is PREM_RANK_SUP)
+    WHERE Not IsNull(POSICAO);
+
+    STORE TRF_RANK_FAT_SUP_PREMIO INTO [$(vPathCampanhas)$(vNomeArquivoRankFatSupPremio)] (qvd);
+    DROP TABLE TRF_RANK_FAT_SUP_PREMIO;
+
+    TRACE QVDs do Ranking de Faturamento (participantes e premios RCA/Supervisor) gerados com sucesso.;
 
 ENDIF
 
@@ -335,8 +476,8 @@ ENDIF
 SET vPathOrigem  = '$(vPathVendasMes)';
 SET vPathDestino = '$(vPathCampanhas)';
 
-LET vAno       = Year(Today());
-LET vMesAtual  = Month(Today());
+LET vAno       = Year(vDataRefCarga);
+LET vMesAtual  = Month(vDataRefCarga);
 LET vTrimestre = Ceil(vMesAtual / 3);
 LET vMesIni    = (vTrimestre - 1) * 3 + 1;   // ex: T3 -> 7
 LET vMesFim    = vMesIni + 2;                 // ex: T3 -> 9
@@ -539,9 +680,8 @@ ENDIF
 SET vPathOrigem  = '$(vPathVendasMes)';
 SET vPathDestino = '$(vPathCampanhas)';
 
-LET vAno      = Year(Today());
-LET vMesAtual = Num(Month(Today()), '00');
-//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAno      = Year(vDataRefCarga);
+LET vMesAtual = Num(Month(vDataRefCarga), '00');
 
 // Nomes dos QVDs finais
 LET vNomeArquivoSecaoMovel               = 'FATO_VENDAS_SECAO_TRIMESTRE_MOVEL_$(vAno)_$(vMesAtual).qvd';
@@ -569,7 +709,7 @@ LET vQtdMesesCarregadosMovel = 0;    // guarda de segurança para a etapa de agr
 
 FOR vOffsetMesMovel = -2 to 0
 
-    LET vDataMesMovel = AddMonths(MonthStart(Today()), vOffsetMesMovel);
+    LET vDataMesMovel = AddMonths(vDataRefCarga, vOffsetMesMovel);
     LET vAnoMesMovel  = Year(vDataMesMovel);
     LET vMesTxtMovel  = Num(Month(vDataMesMovel), '00');
     LET vArquivoMesMovel = '$(vPathOrigem)COMERCIAL_TRATADO_$(vAnoMesMovel)_$(vMesTxtMovel).QVD';
@@ -841,9 +981,8 @@ IF vQtdMesesCarregadosMovel > 0 THEN
     SET vPathOrigemMix  = '$(vPathMetasPG)';
     SET vPathDestinoMix = '$(vPathCampanhas)';
 
-    LET vAnoMix    = Year(Today());
-	LET vMesTxtMix = Num(Month(Today()), '00');
-//     LET vMesTxtMix = Num(Month(AddMonths(Today(), -1)), '00');
+    LET vAnoMix    = Year(vDataRefCarga);
+	LET vMesTxtMix = Num(Month(vDataRefCarga), '00');
 
     LET vArquivoMix          = '$(vPathOrigemMix)CAMPANHAS_$(vAnoMix)_$(vMesTxtMix).xlsx';
     LET vNomeArquivoMixMin   = 'TRF_MIX_MIN_$(vAnoMix)_$(vMesTxtMix).qvd';
@@ -1161,9 +1300,8 @@ ENDIF
 SET vPathOrigem  = '$(vPathVendasMes)';
 SET vPathDestino = '$(vPathCampanhas)';
 
-LET vAno      = Year(Today());
-LET vMesAtual = Num(Month(Today()), '00');
-//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAno      = Year(vDataRefCarga);
+LET vMesAtual = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoMes = '$(vPathOrigem)COMERCIAL_TRATADO_$(vAno)_$(vMesAtual).QVD';
 
@@ -1450,7 +1588,140 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
     //     15): espelhar a mesma regra trocando "Vlr Tot Faturado Liquido
     //     Venda" por "Vlr Venda Liquida", mesmo padrao ja usado nas
     //     Positivacoes de Secao/Departamento acima.
+    //
+    //     A PARTIR DE OUTUBRO/2026 (regra do usuario, 2026-10-06): as
+    //     categorias passam a vir de planilha - ver bloco "6.1-A" logo
+    //     abaixo. A regra fixa Always/Pampers (6.1-B) so roda quando a
+    //     planilha de produtos do mes nao existe (ex: reprocessar setembro).
     /////////////////////////////////////////////////////////////////////////
+
+    /////////////////////////////////////////////////////////////////////////
+    // 6.1-A CATEGORIA FOCO POR PLANILHA (outubro/2026 em diante)
+    //   Categorias  = indicadores 'CATFOCO <NOME>' da aba INDICADORES do
+    //                 mes (out/26: PRESTO 3, VENUS, PANTENE BAMBU).
+    //   Produtos    = aba <NOME> da planilha "PRODUTOS CATEGORIA FOCO -
+    //                 <MES>'<AA>.xls" (coluna CODPROD), na pasta das metas.
+    //   Clientes    = CodPlataformaPG em vCatFocoPlataformas E Cod Ramo P&G
+    //                 em vCatFocoRamos (mesmos para as 3 categorias em
+    //                 out/26 - revisar a cada mes).
+    //   Positivacao = cliente com valor liquido > 0 nos produtos da
+    //                 categoria, sem quantidade minima e sem filtro de
+    //                 departamento. Pedido ("Vlr Venda Liquida") e Faturado
+    //                 ("Vlr Tot Faturado Liquido Venda") contados em
+    //                 separado, mesmo padrao das demais positivacoes.
+    //   Saida: mesmo FATO_CATFOCO_RCA (CodRca/Indicador/ValorPedidoLiquido/
+    //   ValorFaturadoLiquido) - Modelagem nao muda. Meta vem da aba
+    //   METACAT_FOCO do METAS do mes (CAT_FOCO = <NOME>).
+    /////////////////////////////////////////////////////////////////////////
+    SET vCatFocoPlataformas = 116, 176;
+    SET vCatFocoRamos       = 169, 168, 112, 113, 114, 162, 115, 127, 171, 170, 38, 126, 8, 160, 48, 47, 172, 141, 140, 139, 138;
+
+    LET vMesExtensoCatFoco  = Pick(Num(vMesAtual), 'JANEIRO','FEVEREIRO','MARCO','ABRIL','MAIO','JUNHO',
+                                                   'JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO');
+    // Chr(39) = apostrofo do nome do arquivo (ex: OUTUBRO'26)
+    LET vArquivoCatFocoProd = '$(vPathMetasPG)PRODUTOS CATEGORIA FOCO - $(vMesExtensoCatFoco)' & Chr(39) & Right('$(vAno)', 2) & '.xls';
+    // Variavel referenciada pelo NOME (sem '$(...)'): o apostrofo do nome
+    // do arquivo fecharia a string literal. Em FROM [...] pode expandir.
+    LET vTemPlanilhaCatFoco = If(IsNull(FileSize(vArquivoCatFocoProd)), 0, 1);
+
+    IF $(vTemPlanilhaCatFoco) = 1 THEN
+
+        // ATENCAO: nunca expandir a variavel do arquivo em TRACE - o
+        // apostrofo do nome abre uma string e engole o resto do script
+        // sem erro (testado numa sessao do Qlik em 2026-10-06).
+        TRACE Categoria Foco pela planilha de produtos de $(vMesExtensoCatFoco)/$(vAno);
+
+        TMP_CATFOCO_CATS:
+        LOAD DISTINCT
+            Trim(Mid(INDICADOR, 9)) AS CatFocoNome
+        FROM [$(vArquivoCampanhasMes)]
+        (ooxml, embedded labels, table is INDICADORES)
+        WHERE INDICADOR Like 'CATFOCO *';
+
+        PRODUTOS_CATFOCO:
+        LOAD * INLINE [
+        CatFocoNome, CodProdutoCatFoco
+        ];
+
+        FOR vIdxCatFoco = 0 TO NoOfRows('TMP_CATFOCO_CATS') - 1
+
+            LET vCatFocoNome = Peek('CatFocoNome', vIdxCatFoco, 'TMP_CATFOCO_CATS');
+            LET vQtdProdAntes = NoOfRows('PRODUTOS_CATFOCO');
+
+            // Aba ausente nao aborta a carga - so avisa no log
+            SET ErrorMode = 0;
+            CONCATENATE (PRODUTOS_CATFOCO)
+            LOAD
+                '$(vCatFocoNome)' AS CatFocoNome,
+                CODPROD           AS CodProdutoCatFoco
+            FROM [$(vArquivoCatFocoProd)]
+            (biff, embedded labels, table is [$(vCatFocoNome)$])
+            WHERE Not IsNull(CODPROD);
+            SET ErrorMode = 1;
+
+            IF NoOfRows('PRODUTOS_CATFOCO') = $(vQtdProdAntes) THEN
+                TRACE >>> ATENCAO: Categoria Foco $(vCatFocoNome) sem produtos (aba "$(vCatFocoNome)" ausente ou vazia na planilha de produtos).;
+            ENDIF
+
+        NEXT vIdxCatFoco
+
+        DROP TABLE TMP_CATFOCO_CATS;
+
+        NoConcatenate
+        CLIENTE_CATFOCO_VENDAS_TEMP:
+        LOAD
+            "Cod RCA",
+            "Cod Cliente",
+            "Cod Produto"                    AS CodProdutoCatFoco,
+            "Vlr Venda Liquida"              AS VlrPedidoCatFoco,
+            "Vlr Tot Faturado Liquido Venda" AS VlrFaturadoCatFoco
+        RESIDENT TMP_VENDAS
+        WHERE Exists(CodProdutoCatFoco, "Cod Produto")
+          AND Match(CodPlataformaPG, $(vCatFocoPlataformas))
+          AND Match("Cod Ramo P&G", $(vCatFocoRamos));
+
+        // Produto -> categoria (INNER: um produto pode estar em mais de uma)
+        INNER JOIN (CLIENTE_CATFOCO_VENDAS_TEMP)
+        LOAD CatFocoNome, CodProdutoCatFoco RESIDENT PRODUTOS_CATFOCO;
+
+        DROP TABLE PRODUTOS_CATFOCO;
+
+        CLIENTE_CATFOCO_TEMP:
+        LOAD
+            "Cod RCA",
+            "Cod Cliente",
+            CatFocoNome,
+            If(Sum(VlrPedidoCatFoco)   > 0, 1, 0) AS FlagPositivadoPedido,
+            If(Sum(VlrFaturadoCatFoco) > 0, 1, 0) AS FlagPositivadoFaturado
+        RESIDENT CLIENTE_CATFOCO_VENDAS_TEMP
+        GROUP BY
+            "Cod RCA",
+            "Cod Cliente",
+            CatFocoNome;
+
+        DROP TABLE CLIENTE_CATFOCO_VENDAS_TEMP;
+
+        NoConcatenate
+        FATO_CATFOCO_RCA:
+        LOAD
+            "Cod RCA"                    AS CodRca,
+            'CATFOCO ' & CatFocoNome     AS Indicador,
+            Sum(FlagPositivadoPedido)    AS ValorPedidoLiquido,
+            Sum(FlagPositivadoFaturado)  AS ValorFaturadoLiquido
+        RESIDENT CLIENTE_CATFOCO_TEMP
+        GROUP BY
+            "Cod RCA",
+            CatFocoNome;
+
+        DROP TABLE CLIENTE_CATFOCO_TEMP;
+
+    ELSE
+
+    /////////////////////////////////////////////////////////////////////////
+    // 6.1-B REGRA FIXA ALWAYS / PAMPERS (setembro/2026 e anteriores)
+    /////////////////////////////////////////////////////////////////////////
+    TRACE Categoria Foco pela regra fixa Always/Pampers (planilha PRODUTOS CATEGORIA FOCO de $(vMesExtensoCatFoco)/$(vAno) nao encontrada);
+
     CLIENTE_CATFOCO_ALWAYS_TEMP:
     LOAD
         "Cod RCA",
@@ -1516,9 +1787,11 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
 
     RENAME TABLE FATO_CATFOCO_ALWAYS TO FATO_CATFOCO_RCA;
 
+    ENDIF   // 6.1-A planilha de produtos x 6.1-B regra fixa
+
     STORE FATO_CATFOCO_RCA INTO [$(vPathDestino)$(vNomeArquivoCatFoco)] (qvd);
 
-    TRACE QVD de Categoria Foco (Always/Pampers) gerado com sucesso: $(vPathDestino)$(vNomeArquivoCatFoco);
+    TRACE QVD de Categoria Foco gerado com sucesso: $(vPathDestino)$(vNomeArquivoCatFoco);
 
     DROP TABLE FATO_CATFOCO_RCA;
 
@@ -1536,9 +1809,8 @@ IF Not IsNull(FileSize('$(vArquivoMes)')) THEN
     SET vPathOrigemMix  = '$(vPathMetasPG)';
     SET vPathDestinoMix = '$(vPathCampanhas)';
 
-    LET vAnoMix    = Year(Today());
-    LET vMesTxtMix = Num(Month(Today()), '00');
-//    LET vMesTxtMix = Num(Month(AddMonths(Today(), -1)), '00');
+    LET vAnoMix    = Year(vDataRefCarga);
+    LET vMesTxtMix = Num(Month(vDataRefCarga), '00');
 
     LET vArquivoMix = '$(vPathOrigemMix)CAMPANHAS_$(vAnoMix)_$(vMesTxtMix).xlsx';
 
@@ -1935,8 +2207,8 @@ ENDIF
 SET vPathOrigem  = '$(vPathMetasPG)';
 SET vPathDestino = '$(vPathCampanhas)';
 
-LET vAno      = Year(Today());
-LET vMesNum   = Month(Today());
+LET vAno      = Year(vDataRefCarga);
+LET vMesNum   = Month(vDataRefCarga);
 LET vMesTxt   = Num(vMesNum, '00');                 // 08
 LET vMesAbrevPT = Pick(vMesNum, 'JAN','FEV','MAR','ABR','MAI','JUN',
                                 'JUL','AGO','SET','OUT','NOV','DEZ');  // AGO
@@ -2112,9 +2384,8 @@ ENDIF
 SET vPathOrigemPrem  = '$(vPathMetasPG)';
 SET vPathDestinoPrem = '$(vPathCampanhas)';
 
-LET vAnoPrem    = Year(Today());
-LET vMesTxtPrem = Num(Month(Today()), '00');
-//LET vMesTxtPrem = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoPrem    = Year(vDataRefCarga);
+LET vMesTxtPrem = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoPrem     = '$(vPathOrigemPrem)CAMPANHAS_$(vAnoPrem)_$(vMesTxtPrem).xlsx';
 LET vNomeArquivoPrem = 'TRF_PREM_RCA_$(vAnoPrem)_$(vMesTxtPrem).qvd';
@@ -2155,9 +2426,8 @@ ENDIF
 SET vPathOrigemDevol  = '$(vPathMetasPG)';
 SET vPathDestinoDevol = '$(vPathCampanhas)';
 
-LET vAnoDevol    = Year(Today());
-LET vMesTxtDevol = Num(Month(Today()), '00');
-//LET vMesTxtDevol = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoDevol    = Year(vDataRefCarga);
+LET vMesTxtDevol = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoDevol     = '$(vPathOrigemDevol)CAMPANHAS_$(vAnoDevol)_$(vMesTxtDevol).xlsx';
 LET vNomeArquivoDevol = 'TRF_RCA_DEVOL_$(vAnoDevol)_$(vMesTxtDevol).qvd';
@@ -2203,14 +2473,13 @@ ENDIF
 SET vPathOrigemDevolRank  = '$(vPathMetasPG)';
 SET vPathDestinoDevolRank = '$(vPathCampanhas)';
 
-LET vAnoDevolRank    = Year(Today());
-LET vMesTxtDevolRank = Num(Month(Today()), '00');
-//LET vMesTxtDevolRank = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoDevolRank    = Year(vDataRefCarga);
+LET vMesTxtDevolRank = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoDevolRank     = '$(vPathOrigemDevolRank)CAMPANHAS_$(vAnoDevolRank)_$(vMesTxtDevolRank).xlsx';
 LET vNomeArquivoDevolRank = 'TRF_RCA_DEVOL_RANK_$(vAnoDevolRank)_$(vMesTxtDevolRank).qvd';
 
-IF Not IsNull(FileSize('$(vArquivoDevolRank)')) THEN
+IF Not IsNull(FileSize('$(vArquivoDevolRank)')) And $(vTemGillette) = 1 THEN
 
     TRACE Carregando RCA_DEVOL_RANK $(vMesTxtDevolRank)/$(vAnoDevolRank)...;
 
@@ -2248,9 +2517,8 @@ ENDIF
 SET vPathOrigemPremSup  = '$(vPathMetasPG)';
 SET vPathDestinoPremSup = '$(vPathCampanhas)';
 
-LET vAnoPremSup    = Year(Today());
-LET vMesTxtPremSup = Num(Month(Today()), '00');
-//LET vMesTxtPremSup = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoPremSup    = Year(vDataRefCarga);
+LET vMesTxtPremSup = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoPremSup     = '$(vPathOrigemPremSup)CAMPANHAS_$(vAnoPremSup)_$(vMesTxtPremSup).xlsx';
 LET vNomeArquivoPremSup = 'TRF_PREM_SUP_$(vAnoPremSup)_$(vMesTxtPremSup).qvd';
@@ -2268,7 +2536,8 @@ IF Not IsNull(FileSize('$(vArquivoPremSup)')) THEN
         FAIXA                   AS Faixa
     FROM [$(vArquivoPremSup)]
     (ooxml, embedded labels, table is PREM_SUP)
-    WHERE INDICADOR <> 'GILLETTE TRIMESTRAL';
+    WHERE INDICADOR <> 'GILLETTE TRIMESTRAL'
+      And INDICADOR <> 'RANKING FATURAMENTO';   // calculado a parte (bloco RANKING DE FATURAMENTO)
 
     STORE TRF_PREM_SUP INTO [$(vPathDestinoPremSup)$(vNomeArquivoPremSup)] (qvd);
 
@@ -2294,9 +2563,8 @@ ENDIF
 SET vPathOrigemDevolSup  = '$(vPathMetasPG)';
 SET vPathDestinoDevolSup = '$(vPathCampanhas)';
 
-LET vAnoDevolSup    = Year(Today());
-LET vMesTxtDevolSup = Num(Month(Today()), '00');
-//LET vMesTxtDevolSup = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoDevolSup    = Year(vDataRefCarga);
+LET vMesTxtDevolSup = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoDevolSup     = '$(vPathOrigemDevolSup)CAMPANHAS_$(vAnoDevolSup)_$(vMesTxtDevolSup).xlsx';
 LET vNomeArquivoDevolSup = 'TRF_SUP_DEVOL_$(vAnoDevolSup)_$(vMesTxtDevolSup).qvd';
@@ -2344,14 +2612,13 @@ ENDIF
 SET vPathOrigemDevolRankSup  = '$(vPathMetasPG)';
 SET vPathDestinoDevolRankSup = '$(vPathCampanhas)';
 
-LET vAnoDevolRankSup    = Year(Today());
-LET vMesTxtDevolRankSup = Num(Month(Today()), '00');
-//LET vMesTxtDevolRankSup = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAnoDevolRankSup    = Year(vDataRefCarga);
+LET vMesTxtDevolRankSup = Num(Month(vDataRefCarga), '00');
 
 LET vArquivoDevolRankSup     = '$(vPathOrigemDevolRankSup)CAMPANHAS_$(vAnoDevolRankSup)_$(vMesTxtDevolRankSup).xlsx';
 LET vNomeArquivoDevolRankSup = 'TRF_SUP_DEVOL_RANK_$(vAnoDevolRankSup)_$(vMesTxtDevolRankSup).qvd';
 
-IF Not IsNull(FileSize('$(vArquivoDevolRankSup)')) THEN
+IF Not IsNull(FileSize('$(vArquivoDevolRankSup)')) And $(vTemGillette) = 1 THEN
 
     TRACE Carregando SUP_DEVOL_RANK $(vMesTxtDevolRankSup)/$(vAnoDevolRankSup)...;
 
@@ -2401,15 +2668,12 @@ ENDIF
 // seus próprios campos de valor renomeados de forma única.
 ///////////////////////////////////////////////////////////////////////////
 
-LET vDataCarg 	= Date(MonthStart(Today()), 'YYYY_MM');
-LET vDataAux 	= Date(MonthStart(Today()));
-// LET vDataCarg 	= Date(MonthStart(Today()-5), 'YYYY_MM');
-// LET vDataAux 	= Date(MonthStart(Today()-5));
+LET vDataCarg 	= Date(vDataRefCarga, 'YYYY_MM');
+LET vDataAux 	= Date(vDataRefCarga);
 
 // Variaveis para o Trimestre Fixo
-LET vAno       = Year(Today());
-LET vMesAtual  = Month(Today());
-//LET vMesAtual = Num(Month(AddMonths(Today(), -1)), '00');
+LET vAno       = Year(vDataRefCarga);
+LET vMesAtual  = Month(vDataRefCarga);
 LET vTrimestre = Ceil(vMesAtual / 3);
 LET vMesIni    = (vTrimestre - 1) * 3 + 1;   // ex: T3 -> 7
 LET vMesFim    = vMesIni + 2;                 // ex: T3 -> 9
@@ -3073,6 +3337,11 @@ DROP TABLE TEMP_GANHOS_RCA;
 ///////////////////////////////////////////////////////////////////////////
 
 
+// So roda em mes com Gillette Trimestral (aba PREM_RANK_GILLETTE_RCA
+// existe - ver deteccao no inicio da aba Transformacao). Sem Gillette,
+// PREMIACAO_GILLETTE_TRI vem so do historico (aba Carregamento, item 5).
+IF $(vTemGillette) = 1 THEN
+
 /*//////////////////////////////////////////////////////////////////////////
 
     1. MAPEAMENTO SUPERVISOR -> GRUPO DE RANKING
@@ -3289,6 +3558,8 @@ RESIDENT BASE_GILLETTE_TRI;
 
 DROP TABLE BASE_GILLETTE_TRI;
 
+ENDIF   // vTemGillette (ranking Gillette do RCA)
+
 
 ///////////////////////////////////////////////////////////////////////////
 // PREMIACAO FINAL DO SUPERVISOR
@@ -3376,7 +3647,7 @@ DROP TABLE BASE_GILLETTE_TRI;
 //
 // FROM usa $(vDataCarg) ('YYYY_MM', ex: 2026_09) - NAO $(vAno)_$(vMesAtual)
 // aqui na Modelagem: nesta aba vMesAtual e redefinido (poucas linhas acima)
-// como Month(Today()), um dual que interpola no texto como abreviacao do
+// como Month(vDataRefCarga), um dual que interpola no texto como abreviacao do
 // mes ('set'), nao o numero padded ('09') usado na Transformacao ao
 // gerar este QVD - usar a variavel errada aqui gera "Cannot open file"
 // (mesmo padrao ja usado por TRF_BASE_RCA_INDICADORES logo acima).
@@ -4094,6 +4365,9 @@ DROP TABLE TEMP_GANHOS_SUP;
 ///////////////////////////////////////////////////////////////////////////
 
 
+// So roda em mes com Gillette Trimestral - mesmo IF do ranking do RCA.
+IF $(vTemGillette) = 1 THEN
+
 /*//////////////////////////////////////////////////////////////////////////
 
     1. MAPEAMENTO SUPERVISOR -> GRUPO DE RANKING (ranking de Supervisor)
@@ -4300,6 +4574,283 @@ RESIDENT BASE_GILLETTE_TRI_SUP;
 
 DROP TABLE BASE_GILLETTE_TRI_SUP;
 
+ENDIF   // vTemGillette (ranking Gillette do Supervisor)
+
+
+///////////////////////////////////////////////////////////////////////////
+// RANKING DE FATURAMENTO (MENSAL) - A PARTIR DE OUTUBRO/2026
+// Substitui o Gillette Trimestral como campanha de ranking. Regras
+// definidas pelo usuario em 2026-10-06 (campanhas/CAMPANHAS MENSAL OUT
+// 2026.MD):
+//   - Periodo: mes atual.
+//   - Realizado: faturamento liquido TOTAL do mes ("Vlr Tot Faturado
+//     Liquido Venda", todos os departamentos - nao so os do indicador
+//     FATURAMENTO TOTAL AM/RR). Fonte: FATO_VENDAS_DEPARTAMENTO_MES.
+//   - Meta: soma do META_FAT de todos os departamentos (aba RCA_DEP do
+//     METAS do mes). Fonte: TRF_METAS_DEPARTAMENTO_MES.
+//   - % atingimento = Realizado / Meta; so entra no podio quem tem >= 100%,
+//     posicao pelo maior %. Empate nao e tratado (mesmo criterio do
+//     Gillette).
+//   - Devolucao: % devolucao do mes (mesma base da faixa de repasse da
+//     premiacao final - devolucao / faturado bruto) >= FAIXA3 da aba
+//     RCA_DEVOL (SUP_DEVOL para supervisor) -> % do ranking ZERADO.
+//     Abaixo da FAIXA3 nao penaliza. Sem FAIXA3 cadastrada nao penaliza.
+//   - Participantes: RCA = aba PREM_RANK_RCA (compete dentro do
+//     GRUPO_RANK); Supervisor = aba PREM_RANK_SUP (grupo unico).
+//   - Supervisor usa o codigo REAL do cadastro (MAP_RCA_SUP): 73 = so os
+//     RCAs do Gerson TOP. A FAIXA3 vem da SUP_DEVOL pelo proprio codigo
+//     ou, se nao houver, pelo ficticio (73 -> 7374, MAP_SUP_FICTICIO).
+//     Realizado/Meta/Devolucao do supervisor = soma de TODOS os RCAs do
+//     time, nao so os participantes do ranking de RCA.
+// Tabelas finais: PREMIACAO_RANKING_FAT (liga ao modelo so por CodRca) e
+// PREMIACAO_RANKING_FAT_SUP (so por CodSupervisor). Todos os outros
+// campos tem sufixo RankFat/RankFatSup - nenhum campo em comum extra
+// (regra de referencia circular, ver DOCUMENTACAO secao 5).
+///////////////////////////////////////////////////////////////////////////
+IF $(vTemRankingFat) = 1 THEN
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    1. REALIZADO, META E DEVOLUCAO POR RCA (todos os RCAs do mes)
+
+//////////////////////////////////////////////////////////////////////////*/
+TEMP_RANK_FAT_REAL:
+LOAD
+    "Cod RCA"                 AS CodRca,
+    Sum(ValorFaturadoLiquido) AS FaturadoLiquidoRankFat
+FROM [$(vPathCampanhas)FATO_VENDAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
+(qvd)
+GROUP BY "Cod RCA";
+
+TEMP_RANK_FAT_META:
+LOAD
+    [Cod RCA]    AS CodRca,
+    Sum(MetaFat) AS MetaRankFat
+FROM [$(vPathCampanhas)TRF_METAS_DEPARTAMENTO_MES_$(vDataCarg).qvd]
+(qvd)
+GROUP BY [Cod RCA];
+
+MAP_RANK_FAT_REAL:
+MAPPING LOAD CodRca, FaturadoLiquidoRankFat RESIDENT TEMP_RANK_FAT_REAL;
+
+MAP_RANK_FAT_META:
+MAPPING LOAD CodRca, MetaRankFat RESIDENT TEMP_RANK_FAT_META;
+
+// % devolucao do mes ja calculado para a premiacao final (PARTE 2 acima)
+MAP_RANK_FAT_DEVOL:
+MAPPING LOAD CodRca, PercDevolucaoRcaFaturado
+RESIDENT GANHO_FINAL_RCA
+WHERE Not IsNull(PercDevolucaoRcaFaturado);
+
+MAP_RANK_FAT_FAIXA3:
+MAPPING LOAD CodRca, Faixa3
+FROM [$(vPathDestinoDevol)$(vNomeArquivoDevol)]
+(qvd)
+WHERE Not IsNull(Faixa3);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    2. BASE DO RANKING DE RCA (todos os participantes, com ou sem 100%)
+       Quem nao bateu 100% ou foi zerado por devolucao continua na tabela
+       final, so sem Posicao/Premio.
+
+//////////////////////////////////////////////////////////////////////////*/
+BASE_RANK_FAT:
+LOAD
+    *,
+    If(FlagZeradoPorDevolucaoRankFat = 1, 0, PercAtingimentoRankFat) AS PercAtingimentoRankFatValidado;
+LOAD
+    *,
+    If(MetaRankFat > 0, FaturadoLiquidoRankFat / MetaRankFat)        AS PercAtingimentoRankFat,
+    // Null >= x nunca e verdadeiro: sem % devolucao ou sem FAIXA3, nao zera
+    If(PercDevolucaoRankFat >= Faixa3DevolucaoRankFat, 1, 0)         AS FlagZeradoPorDevolucaoRankFat;
+LOAD
+    CodRca,
+    GrupoRankFat,
+    ApplyMap('MAP_RANK_FAT_REAL',   CodRca, 0)      AS FaturadoLiquidoRankFat,
+    ApplyMap('MAP_RANK_FAT_META',   CodRca, Null()) AS MetaRankFat,
+    ApplyMap('MAP_RANK_FAT_DEVOL',  CodRca, Null()) AS PercDevolucaoRankFat,
+    ApplyMap('MAP_RANK_FAT_FAIXA3', CodRca, Null()) AS Faixa3DevolucaoRankFat
+FROM [$(vPathCampanhas)$(vNomeArquivoRankFatRca)]
+(qvd);
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    3. POSICAO DENTRO DO GRUPO (so >= 100%, ja validado pela devolucao)
+       Mesmo padrao do Gillette: ORDER BY grupo + % DESC e Peek() na
+       linha anterior - reinicia em 1 quando o grupo muda.
+
+//////////////////////////////////////////////////////////////////////////*/
+RANKING_FAT:
+LOAD
+    CodRca,
+    GrupoRankFat,
+    If(GrupoRankFat = Peek('GrupoRankFat'), Peek('PosicaoRankFat') + 1, 1) AS PosicaoRankFat
+RESIDENT BASE_RANK_FAT
+WHERE PercAtingimentoRankFatValidado >= 1
+ORDER BY GrupoRankFat, PercAtingimentoRankFatValidado DESC;
+
+// Premio por grupo + posicao; posicao alem das premiadas fica sem match
+LEFT JOIN (RANKING_FAT)
+LOAD
+    GrupoRankFat,
+    PosicaoRankFat,
+    PremioRankFat
+FROM [$(vPathCampanhas)$(vNomeArquivoRankFatRcaPremio)]
+(qvd);
+
+DROP FIELD GrupoRankFat FROM RANKING_FAT;
+
+LEFT JOIN (BASE_RANK_FAT)
+LOAD * RESIDENT RANKING_FAT;
+
+DROP TABLE RANKING_FAT;
+
+PREMIACAO_RANKING_FAT:
+NoConcatenate
+LOAD
+    CodRca,
+    GrupoRankFat,
+    FaturadoLiquidoRankFat,
+    MetaRankFat,
+    PercAtingimentoRankFat,
+    PercDevolucaoRankFat,
+    Faixa3DevolucaoRankFat,
+    FlagZeradoPorDevolucaoRankFat,
+    PercAtingimentoRankFatValidado,
+    PosicaoRankFat,
+    Alt(PremioRankFat, 0) AS PremioRankFat
+RESIDENT BASE_RANK_FAT;
+
+DROP TABLE BASE_RANK_FAT;
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    4. RANKING DE SUPERVISOR
+       Realizado/Meta/Devolucao = soma de todos os RCAs do time pelo
+       codigo REAL do supervisor (MAP_RCA_SUP). Devolucao usa os mesmos
+       totais da premiacao final do RCA (GANHO_FINAL_RCA:
+       TotalDevolucaoRca / TotalFaturadoRca).
+
+//////////////////////////////////////////////////////////////////////////*/
+// Codigo do supervisor primeiro, agregacao depois (GROUP BY so por campo)
+TEMP_RANK_FAT_SUP_RCA:
+LOAD
+    ApplyMap('MAP_RCA_SUP', CodRca, '#ND') AS CodSupervisorRankTmp,
+    FaturadoLiquidoRankFat                 AS RealRankTmp,
+    0                                      AS MetaRankTmp,
+    0                                      AS DevolRankTmp,
+    0                                      AS FatBrutoRankTmp
+RESIDENT TEMP_RANK_FAT_REAL;
+
+CONCATENATE (TEMP_RANK_FAT_SUP_RCA)
+LOAD
+    ApplyMap('MAP_RCA_SUP', CodRca, '#ND') AS CodSupervisorRankTmp,
+    MetaRankFat                            AS MetaRankTmp
+RESIDENT TEMP_RANK_FAT_META;
+
+CONCATENATE (TEMP_RANK_FAT_SUP_RCA)
+LOAD
+    ApplyMap('MAP_RCA_SUP', CodRca, '#ND') AS CodSupervisorRankTmp,
+    TotalDevolucaoRca                      AS DevolRankTmp,
+    TotalFaturadoRca                       AS FatBrutoRankTmp
+RESIDENT GANHO_FINAL_RCA;
+
+DROP TABLES TEMP_RANK_FAT_REAL, TEMP_RANK_FAT_META;
+
+TEMP_RANK_FAT_SUP_AGG:
+LOAD
+    CodSupervisorRankTmp,
+    Sum(RealRankTmp)     AS RealRankTmp,
+    Sum(MetaRankTmp)     AS MetaRankTmp,
+    If(Sum(FatBrutoRankTmp) > 0, Sum(DevolRankTmp) / Sum(FatBrutoRankTmp)) AS PercDevolRankTmp
+RESIDENT TEMP_RANK_FAT_SUP_RCA
+GROUP BY CodSupervisorRankTmp;
+
+DROP TABLE TEMP_RANK_FAT_SUP_RCA;
+
+MAP_RANK_FAT_REAL_SUP:
+MAPPING LOAD CodSupervisorRankTmp, RealRankTmp RESIDENT TEMP_RANK_FAT_SUP_AGG;
+
+MAP_RANK_FAT_META_SUP:
+MAPPING LOAD CodSupervisorRankTmp, MetaRankTmp RESIDENT TEMP_RANK_FAT_SUP_AGG
+WHERE MetaRankTmp > 0;
+
+MAP_RANK_FAT_DEVOL_SUP:
+MAPPING LOAD CodSupervisorRankTmp, PercDevolRankTmp RESIDENT TEMP_RANK_FAT_SUP_AGG
+WHERE Not IsNull(PercDevolRankTmp);
+
+DROP TABLE TEMP_RANK_FAT_SUP_AGG;
+
+MAP_RANK_FAT_FAIXA3_SUP:
+MAPPING LOAD CodSupervisor, Faixa3
+FROM [$(vPathDestinoDevolSup)$(vNomeArquivoDevolSup)]
+(qvd)
+WHERE Not IsNull(Faixa3);
+
+BASE_RANK_FAT_SUP:
+LOAD
+    *,
+    If(FlagZeradoPorDevolucaoRankFatSup = 1, 0, PercAtingimentoRankFatSup) AS PercAtingimentoRankFatValidadoSup;
+LOAD
+    *,
+    If(MetaRankFatSup > 0, FaturadoLiquidoRankFatSup / MetaRankFatSup) AS PercAtingimentoRankFatSup,
+    If(PercDevolucaoRankFatSup >= Faixa3DevolucaoRankFatSup, 1, 0)     AS FlagZeradoPorDevolucaoRankFatSup;
+LOAD
+    CodSupervisor,
+    ApplyMap('MAP_RANK_FAT_REAL_SUP',  CodSupervisor, 0)      AS FaturadoLiquidoRankFatSup,
+    ApplyMap('MAP_RANK_FAT_META_SUP',  CodSupervisor, Null()) AS MetaRankFatSup,
+    ApplyMap('MAP_RANK_FAT_DEVOL_SUP', CodSupervisor, Null()) AS PercDevolucaoRankFatSup,
+    // Faixa do proprio codigo; senao a do ficticio (73 -> 7374)
+    ApplyMap('MAP_RANK_FAT_FAIXA3_SUP', CodSupervisor,
+        ApplyMap('MAP_RANK_FAT_FAIXA3_SUP', ApplyMap('MAP_SUP_FICTICIO', CodSupervisor, CodSupervisor), Null())
+    )                                                          AS Faixa3DevolucaoRankFatSup
+FROM [$(vPathCampanhas)$(vNomeArquivoRankFatSup)]
+(qvd);
+
+// Grupo unico: posicao = ordem de chegada depois do ORDER BY
+RANKING_FAT_SUP:
+LOAD
+    CodSupervisor,
+    RowNo() AS PosicaoRankFatSup
+RESIDENT BASE_RANK_FAT_SUP
+WHERE PercAtingimentoRankFatValidadoSup >= 1
+ORDER BY PercAtingimentoRankFatValidadoSup DESC;
+
+LEFT JOIN (RANKING_FAT_SUP)
+LOAD
+    PosicaoRankFatSup,
+    PremioRankFatSup
+FROM [$(vPathCampanhas)$(vNomeArquivoRankFatSupPremio)]
+(qvd);
+
+LEFT JOIN (BASE_RANK_FAT_SUP)
+LOAD * RESIDENT RANKING_FAT_SUP;
+
+DROP TABLE RANKING_FAT_SUP;
+
+PREMIACAO_RANKING_FAT_SUP:
+NoConcatenate
+LOAD
+    CodSupervisor,
+    FaturadoLiquidoRankFatSup,
+    MetaRankFatSup,
+    PercAtingimentoRankFatSup,
+    PercDevolucaoRankFatSup,
+    Faixa3DevolucaoRankFatSup,
+    FlagZeradoPorDevolucaoRankFatSup,
+    PercAtingimentoRankFatValidadoSup,
+    PosicaoRankFatSup,
+    Alt(PremioRankFatSup, 0) AS PremioRankFatSup
+RESIDENT BASE_RANK_FAT_SUP;
+
+DROP TABLE BASE_RANK_FAT_SUP;
+
+ENDIF   // vTemRankingFat
+
 ///$tab Carregamento
 ///////////////////////////////////////////////////////////////////////////
 // CARREGAMENTO - HISTORIZACAO + TABELAS FINAIS DO MODELO DE DADOS
@@ -4389,7 +4940,7 @@ IF Not IsNull(FileSize('$(vArquivoHistBaseRca)')) THEN
     LOAD *
     FROM [$(vArquivoHistBaseRca)]
     (qvd)
-    WHERE MonthStart(DATA) <> MonthStart(Today());
+    WHERE MonthStart(DATA) <> $(vDataRefCarga);
 ENDIF
 
 STORE BASE_RCA_INDICADORES_REALIZADO INTO [$(vArquivoHistBaseRca)] (qvd);
@@ -4407,7 +4958,7 @@ IF Not IsNull(FileSize('$(vArquivoHistBaseSup)')) THEN
     LOAD *
     FROM [$(vArquivoHistBaseSup)]
     (qvd)
-    WHERE MonthStart(DataSup) <> MonthStart(Today());
+    WHERE MonthStart(DataSup) <> $(vDataRefCarga);
 ENDIF
 
 STORE BASE_SUP_INDICADORES_REALIZADO INTO [$(vArquivoHistBaseSup)] (qvd);
@@ -4423,7 +4974,7 @@ GANHO_FINAL_RCA_HIST:
 NoConcatenate
 LOAD
     *,
-    Date(MonthStart(Today())) AS DataRef
+    Date($(vDataRefCarga)) AS DataRef
 RESIDENT GANHO_FINAL_RCA;
 
 DROP TABLE GANHO_FINAL_RCA;
@@ -4436,7 +4987,7 @@ IF Not IsNull(FileSize('$(vArquivoHistGanhoRca)')) THEN
     LOAD *
     FROM [$(vArquivoHistGanhoRca)]
     (qvd)
-    WHERE MonthStart(DataRef) <> MonthStart(Today());
+    WHERE MonthStart(DataRef) <> $(vDataRefCarga);
 ENDIF
 
 STORE GANHO_FINAL_RCA INTO [$(vArquivoHistGanhoRca)] (qvd);
@@ -4455,7 +5006,7 @@ GANHO_FINAL_SUP_HIST:
 NoConcatenate
 LOAD
     *,
-    Date(MonthStart(Today())) AS DataRefSup
+    Date($(vDataRefCarga)) AS DataRefSup
 RESIDENT GANHO_FINAL_SUP;
 
 DROP TABLE GANHO_FINAL_SUP;
@@ -4468,7 +5019,7 @@ IF Not IsNull(FileSize('$(vArquivoHistGanhoSup)')) THEN
     LOAD *
     FROM [$(vArquivoHistGanhoSup)]
     (qvd)
-    WHERE MonthStart(DataRefSup) <> MonthStart(Today());
+    WHERE MonthStart(DataRefSup) <> $(vDataRefCarga);
 ENDIF
 
 STORE GANHO_FINAL_SUP INTO [$(vArquivoHistGanhoSup)] (qvd);
@@ -4487,27 +5038,39 @@ STORE GANHO_FINAL_SUP INTO [$(vArquivoHistGanhoSup)] (qvd);
        reatribuicao depois.)
 
 //////////////////////////////////////////////////////////////////////////*/
-PREMIACAO_GILLETTE_TRI_HIST:
-NoConcatenate
-LOAD
-    *,
-    '$(vAno)-T$(vTrimestre)' AS TrimestreRef
-RESIDENT PREMIACAO_GILLETTE_TRI;
-
-DROP TABLE PREMIACAO_GILLETTE_TRI;
-RENAME TABLE PREMIACAO_GILLETTE_TRI_HIST TO PREMIACAO_GILLETTE_TRI;
-
 LET vArquivoHistGilletteTri = '$(vPathCampanhas)HISTORICO_PREMIACAO_GILLETTE_TRI.qvd';
 
-IF Not IsNull(FileSize('$(vArquivoHistGilletteTri)')) THEN
-    CONCATENATE (PREMIACAO_GILLETTE_TRI)
-    LOAD *
-    FROM [$(vArquivoHistGilletteTri)]
-    (qvd)
-    WHERE TrimestreRef <> '$(vAno)-T$(vTrimestre)';
-ENDIF
+IF $(vTemGillette) = 1 THEN
 
-STORE PREMIACAO_GILLETTE_TRI INTO [$(vArquivoHistGilletteTri)] (qvd);
+    PREMIACAO_GILLETTE_TRI_HIST:
+    NoConcatenate
+    LOAD
+        *,
+        '$(vAno)-T$(vTrimestre)' AS TrimestreRef
+    RESIDENT PREMIACAO_GILLETTE_TRI;
+
+    DROP TABLE PREMIACAO_GILLETTE_TRI;
+    RENAME TABLE PREMIACAO_GILLETTE_TRI_HIST TO PREMIACAO_GILLETTE_TRI;
+
+    IF Not IsNull(FileSize('$(vArquivoHistGilletteTri)')) THEN
+        CONCATENATE (PREMIACAO_GILLETTE_TRI)
+        LOAD *
+        FROM [$(vArquivoHistGilletteTri)]
+        (qvd)
+        WHERE TrimestreRef <> '$(vAno)-T$(vTrimestre)';
+    ENDIF
+
+    STORE PREMIACAO_GILLETTE_TRI INTO [$(vArquivoHistGilletteTri)] (qvd);
+
+// Mes sem Gillette (a partir de out/2026): so le o historico, sem
+// regravar - os trimestres ja apurados (ex: 2026-T3) continuam no modelo.
+ELSEIF Not IsNull(FileSize('$(vArquivoHistGilletteTri)')) THEN
+
+    PREMIACAO_GILLETTE_TRI:
+    NoConcatenate
+    LOAD * FROM [$(vArquivoHistGilletteTri)] (qvd);
+
+ENDIF
 
 
 /*//////////////////////////////////////////////////////////////////////////
@@ -4518,27 +5081,119 @@ STORE PREMIACAO_GILLETTE_TRI INTO [$(vArquivoHistGilletteTri)] (qvd);
        campo em comum com as demais) e deve continuar assim.)
 
 //////////////////////////////////////////////////////////////////////////*/
-PREMIACAO_GILLETTE_TRI_SUP_HIST:
-NoConcatenate
-LOAD
-    *,
-    '$(vAno)-T$(vTrimestre)' AS TrimestreRefSup
-RESIDENT PREMIACAO_GILLETTE_TRI_SUP;
-
-DROP TABLE PREMIACAO_GILLETTE_TRI_SUP;
-RENAME TABLE PREMIACAO_GILLETTE_TRI_SUP_HIST TO PREMIACAO_GILLETTE_TRI_SUP;
-
 LET vArquivoHistGilletteTriSup = '$(vPathCampanhas)HISTORICO_PREMIACAO_GILLETTE_TRI_SUP.qvd';
 
-IF Not IsNull(FileSize('$(vArquivoHistGilletteTriSup)')) THEN
-    CONCATENATE (PREMIACAO_GILLETTE_TRI_SUP)
-    LOAD *
-    FROM [$(vArquivoHistGilletteTriSup)]
-    (qvd)
-    WHERE TrimestreRefSup <> '$(vAno)-T$(vTrimestre)';
+IF $(vTemGillette) = 1 THEN
+
+    PREMIACAO_GILLETTE_TRI_SUP_HIST:
+    NoConcatenate
+    LOAD
+        *,
+        '$(vAno)-T$(vTrimestre)' AS TrimestreRefSup
+    RESIDENT PREMIACAO_GILLETTE_TRI_SUP;
+
+    DROP TABLE PREMIACAO_GILLETTE_TRI_SUP;
+    RENAME TABLE PREMIACAO_GILLETTE_TRI_SUP_HIST TO PREMIACAO_GILLETTE_TRI_SUP;
+
+    IF Not IsNull(FileSize('$(vArquivoHistGilletteTriSup)')) THEN
+        CONCATENATE (PREMIACAO_GILLETTE_TRI_SUP)
+        LOAD *
+        FROM [$(vArquivoHistGilletteTriSup)]
+        (qvd)
+        WHERE TrimestreRefSup <> '$(vAno)-T$(vTrimestre)';
+    ENDIF
+
+    STORE PREMIACAO_GILLETTE_TRI_SUP INTO [$(vArquivoHistGilletteTriSup)] (qvd);
+
+// Mes sem Gillette: so le o historico (mesma logica do item 5)
+ELSEIF Not IsNull(FileSize('$(vArquivoHistGilletteTriSup)')) THEN
+
+    PREMIACAO_GILLETTE_TRI_SUP:
+    NoConcatenate
+    LOAD * FROM [$(vArquivoHistGilletteTriSup)] (qvd);
+
 ENDIF
 
-STORE PREMIACAO_GILLETTE_TRI_SUP INTO [$(vArquivoHistGilletteTriSup)] (qvd);
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    7. PREMIACAO_RANKING_FAT (Ranking de Faturamento do RCA, a partir de
+       out/2026 - grao mensal, campo DataRefRankFat). Mesmo padrao dos
+       itens 1-4: substitui o mes atual no historico, mantem os demais.
+       Mes sem a campanha: so le o historico.
+
+//////////////////////////////////////////////////////////////////////////*/
+LET vArquivoHistRankFat = '$(vPathCampanhas)HISTORICO_PREMIACAO_RANKING_FAT.qvd';
+
+IF $(vTemRankingFat) = 1 THEN
+
+    PREMIACAO_RANKING_FAT_HIST:
+    NoConcatenate
+    LOAD
+        *,
+        Date($(vDataRefCarga)) AS DataRefRankFat
+    RESIDENT PREMIACAO_RANKING_FAT;
+
+    DROP TABLE PREMIACAO_RANKING_FAT;
+    RENAME TABLE PREMIACAO_RANKING_FAT_HIST TO PREMIACAO_RANKING_FAT;
+
+    IF Not IsNull(FileSize('$(vArquivoHistRankFat)')) THEN
+        CONCATENATE (PREMIACAO_RANKING_FAT)
+        LOAD *
+        FROM [$(vArquivoHistRankFat)]
+        (qvd)
+        WHERE MonthStart(DataRefRankFat) <> $(vDataRefCarga);
+    ENDIF
+
+    STORE PREMIACAO_RANKING_FAT INTO [$(vArquivoHistRankFat)] (qvd);
+
+ELSEIF Not IsNull(FileSize('$(vArquivoHistRankFat)')) THEN
+
+    PREMIACAO_RANKING_FAT:
+    NoConcatenate
+    LOAD * FROM [$(vArquivoHistRankFat)] (qvd);
+
+ENDIF
+
+
+/*//////////////////////////////////////////////////////////////////////////
+
+    8. PREMIACAO_RANKING_FAT_SUP (Ranking de Faturamento do Supervisor -
+       grao mensal, campo DataRefRankFatSup; sufixo Sup pelo mesmo motivo
+       do item 4). Mesma logica do item 7.
+
+//////////////////////////////////////////////////////////////////////////*/
+LET vArquivoHistRankFatSup = '$(vPathCampanhas)HISTORICO_PREMIACAO_RANKING_FAT_SUP.qvd';
+
+IF $(vTemRankingFat) = 1 THEN
+
+    PREMIACAO_RANKING_FAT_SUP_HIST:
+    NoConcatenate
+    LOAD
+        *,
+        Date($(vDataRefCarga)) AS DataRefRankFatSup
+    RESIDENT PREMIACAO_RANKING_FAT_SUP;
+
+    DROP TABLE PREMIACAO_RANKING_FAT_SUP;
+    RENAME TABLE PREMIACAO_RANKING_FAT_SUP_HIST TO PREMIACAO_RANKING_FAT_SUP;
+
+    IF Not IsNull(FileSize('$(vArquivoHistRankFatSup)')) THEN
+        CONCATENATE (PREMIACAO_RANKING_FAT_SUP)
+        LOAD *
+        FROM [$(vArquivoHistRankFatSup)]
+        (qvd)
+        WHERE MonthStart(DataRefRankFatSup) <> $(vDataRefCarga);
+    ENDIF
+
+    STORE PREMIACAO_RANKING_FAT_SUP INTO [$(vArquivoHistRankFatSup)] (qvd);
+
+ELSEIF Not IsNull(FileSize('$(vArquivoHistRankFatSup)')) THEN
+
+    PREMIACAO_RANKING_FAT_SUP:
+    NoConcatenate
+    LOAD * FROM [$(vArquivoHistRankFatSup)] (qvd);
+
+ENDIF
 
 
 TRACE ==============================================;
